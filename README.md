@@ -8,13 +8,13 @@ Windows 11 上的本地 Codex 状态工具。在任务栏左侧空白区域显�
 
 任务栏左侧显示状态、剩余额度和重置倒计时：
 
-![Codex Peek 任务栏状态条：等待确认、剩余额度与重置倒计时](docs/images/taskbar-demo.jpg)
+<a href="docs/images/taskbar-demo.png"><img src="docs/images/taskbar-demo.png" width="248" alt="Codex Peek 任务栏状态条：等待确认、剩余额度与重置倒计时"></a>
 
 点击展开，查看并行任务的具体内容，优先处理等待确认的操作：
 
-![Codex Peek 任务详情面板：一项等待确认、两项正在运行，显示命令、文件及最近进展](docs/images/tasks-demo.jpg)
+<a href="docs/images/tasks-demo.png"><img src="docs/images/tasks-demo.png" width="420" alt="Codex Peek 任务详情面板：一项等待确认、两项正在运行，显示命令、文件及最近进展"></a>
 
-截图来自 Windows 11 上当前可运行的版本，任务和额度均为演示数据。
+截图来自 Windows 11 上当前可运行的版本，任务和额度均为演示数据。使用系统原始分辨率的无损 PNG（434 × 70 / 735 × 766），点击图片可查看原图。
 
 ## 功能
 
