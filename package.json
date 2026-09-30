@@ -1,0 +1,12 @@
+{
+  "name": "codex-peek",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Windows taskbar companion for local Codex task status and remaining usage",
+  "type": "module",
+  "engines": {"node": ">=24"},
+  "scripts": {
+    "test": "node --no-warnings --test test.mjs",
+    "start": "node --no-warnings backend.mjs --once"
+  }
+}

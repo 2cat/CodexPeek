@@ -1,0 +1,284 @@
+using System;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Threading;
+using System.Web.Script.Serialization;
+using System.Windows.Automation;
+using System.Windows.Forms;
+using Microsoft.Win32;
+
+class TaskItem {
+    public string id {get;set;} public string title {get;set;} public string state {get;set;}
+    public string detail {get;set;} public string progress {get;set;} public double? startedAt {get;set;} public double? waitingSince {get;set;}
+}
+class Limit {public double remaining {get;set;} public string label {get;set;} public double? resetsAt {get;set;}}
+class View {
+    public string headline {get;set;} public string quotaText {get;set;} public string tone {get;set;}
+    public int running {get;set;} public int waiting {get;set;} public bool connected {get;set;}
+    public double? updatedAt {get;set;} public string diagnostic {get;set;}
+    public TaskItem[] tasks {get;set;} public Limit[] windows {get;set;}
+    public static View Offline() {return new View {headline="状态未同步",quotaText="额度暂不可用",tone="muted",tasks=new TaskItem[0],windows=new Limit[0],diagnostic="正在连接 Codex 桌面端"};}
+}
+
+static class Program {
+    [STAThread] static void Main(string[] args) {
+        if(args.Contains("--taskbar-info")) {
+            Native.SetProcessDpiAwarenessContext(new IntPtr(-4));
+            var bar=Native.FindWindow("Shell_TrayWnd",null);var root=AutomationElement.FromHandle(bar);
+            var buttons=root.FindAll(TreeScope.Descendants,new OrCondition(new PropertyCondition(AutomationElement.ControlTypeProperty,ControlType.Button),new PropertyCondition(AutomationElement.ControlTypeProperty,ControlType.CheckBox),new PropertyCondition(AutomationElement.ControlTypeProperty,ControlType.ListItem)));
+            Console.WriteLine("bar="+Native.Rect(bar)+" dpi="+Native.GetDpiForWindow(bar));
+            foreach(AutomationElement button in buttons)Console.WriteLine(button.Current.ControlType.ProgrammaticName+" "+button.Current.BoundingRectangle+" offscreen="+button.Current.IsOffscreen);
+            Console.WriteLine("foreground="+Native.Rect(Native.GetForegroundWindow())+" fullscreen="+Native.Fullscreen(IntPtr.Zero,IntPtr.Zero,Screen.FromHandle(bar).Bounds));
+            foreach(var process in Process.GetProcessesByName("CodexPeek"))foreach(ProcessThread thread in process.Threads){var name=Native.DesktopName(thread.Id);if(name.Length>0)Console.WriteLine("app thread desktop="+name);}
+            return;
+        }
+        bool first; using(var mutex=new Mutex(true,"Local\\CodexPeek-v1",out first)) {
+            if(!first) return;
+            Native.SetProcessDpiAwarenessContext(new IntPtr(-4));
+            Application.EnableVisualStyles();Application.SetCompatibleTextRenderingDefault(false);
+            View preview=null;int at=Array.IndexOf(args,"--preview");
+            if(at>=0&&at+1<args.Length)preview=new JavaScriptSerializer().Deserialize<View>(File.ReadAllText(args[at+1],Encoding.UTF8));
+            Application.Run(new Peek(args.Contains("--open"),preview));
+        }
+    }
+}
+
+static class Theme {
+    public static Color Bg=Color.FromArgb(29,31,35),Text=Color.FromArgb(238,240,243),Muted=Color.FromArgb(156,164,177),Line=Color.FromArgb(52,56,63);
+    public static Color Accent(string tone) {return tone=="amber"?Color.FromArgb(235,182,82):tone=="red"?Color.FromArgb(245,119,126):tone=="blue"?Color.FromArgb(113,166,247):Muted;}
+    public static Font Font(float pixels,bool bold=false) {return new Font("Microsoft YaHei UI",pixels,bold?FontStyle.Bold:FontStyle.Regular,GraphicsUnit.Pixel);}
+    public static void TextAt(Graphics g,string text,Font font,Color color,Rectangle rect,bool wrap=false) {
+        TextRenderer.DrawText(g,text??"",font,rect,color,TextFormatFlags.NoPrefix|TextFormatFlags.EndEllipsis|(wrap?TextFormatFlags.WordBreak:TextFormatFlags.SingleLine)|TextFormatFlags.VerticalCenter);
+    }
+    public static void Round(Form form,int radius) {
+        using(var path=new GraphicsPath()) {
+            int d=radius*2,w=form.Width,h=form.Height;
+            path.AddArc(0,0,d,d,180,90);path.AddArc(w-d,0,d,d,270,90);path.AddArc(w-d,h-d,d,d,0,90);path.AddArc(0,h-d,d,d,90,90);path.CloseFigure();
+            var old=form.Region;form.Region=new Region(path);if(old!=null)old.Dispose();
+        }
+    }
+}
+
+class MenuColors : ProfessionalColorTable {
+    public override Color ToolStripDropDownBackground {get{return Theme.Bg;}}
+    public override Color MenuItemSelected {get{return Color.FromArgb(47,52,61);}}
+    public override Color MenuItemBorder {get{return Theme.Line;}}
+    public override Color MenuBorder {get{return Theme.Line;}}
+    public override Color SeparatorDark {get{return Theme.Line;}}
+    public override Color SeparatorLight {get{return Theme.Line;}}
+}
+
+class Peek : Form {
+    public static bool Review=Environment.GetCommandLineArgs().Contains("--review");
+    public bool Preview;
+    public View Data=View.Offline();
+    public float DpiScale=1;
+    public int S(float dip) {return (int)Math.Round(dip*DpiScale);}
+    readonly System.Windows.Forms.Timer timer=new System.Windows.Forms.Timer();
+    readonly NotifyIcon tray=new NotifyIcon(); readonly ToolTip tip=new ToolTip();
+    Process backend; Flyout flyout; DateTime lastData=DateTime.MinValue,nextStart=DateTime.MinValue,nextMeasure=DateTime.MinValue;
+    bool closing,locked,measuring,hover; Rectangle safeArea; DateTime measured=DateTime.MinValue; Icon appIcon;
+    public Peek(bool openAtStart=false,View preview=null) {
+        Preview=preview!=null;
+        Text="Codex Peek";AccessibleName="Codex 状态栏";FormBorderStyle=FormBorderStyle.None;ShowInTaskbar=Review;TopMost=true;StartPosition=FormStartPosition.Manual;
+        AutoScaleMode=AutoScaleMode.None;BackColor=Theme.Bg;DoubleBuffered=true;Cursor=Cursors.Hand;Size=new Size(320,40);
+        appIcon=MakeIcon();Icon=appIcon;tray.Icon=appIcon;tray.Text="Codex Peek";tray.Visible=true;
+        var menu=new ContextMenuStrip();menu.Items.Add("查看本机任务",null,(s,e)=>Toggle());menu.Items.Add("打开 Codex",null,(s,e)=>OpenTask(null));menu.Items.Add(new ToolStripSeparator());menu.Items.Add("退出 Codex Peek",null,(s,e)=>Close());
+        menu.ShowImageMargin=false;menu.ForeColor=Theme.Text;menu.Renderer=new ToolStripProfessionalRenderer(new MenuColors());
+        menu.Opening+=(s,e)=>{tip.Hide(this);tip.Active=false;};menu.Closed+=(s,e)=>{tip.Active=flyout==null||!flyout.Visible;};
+        tray.ContextMenuStrip=menu;ContextMenuStrip=menu;tray.MouseClick+=(s,e)=>{if(e.Button==MouseButtons.Left)Toggle();};
+        MouseEnter+=(s,e)=>{hover=true;Invalidate();};MouseLeave+=(s,e)=>{hover=false;Invalidate();};MouseUp+=(s,e)=>{if(e.Button==MouseButtons.Left)Toggle();};
+        SystemEvents.SessionSwitch+=SessionChanged;
+        timer.Interval=750;timer.Tick+=(s,e)=>Tick();Shown+=(s,e)=>{Hide();if(Preview)Apply(preview);else StartBackend();Tick();timer.Start();if(openAtStart)BeginInvoke((Action)(()=>Toggle()));};
+    }
+    protected override bool ShowWithoutActivation {get{return true;}}
+    protected override CreateParams CreateParams {get{var cp=base.CreateParams;cp.ExStyle|=0x08000000;if(!Review)cp.ExStyle|=0x80;return cp;}}
+    protected override void WndProc(ref Message m) {if(m.Msg==0x21){m.Result=new IntPtr(3);return;}base.WndProc(ref m);}
+    static Icon MakeIcon() {
+        using(var bitmap=new Bitmap(32,32)) using(var g=Graphics.FromImage(bitmap)) {
+            g.SmoothingMode=SmoothingMode.AntiAlias;g.Clear(Color.Transparent);
+            using(var brush=new SolidBrush(Theme.Bg))g.FillEllipse(brush,1,1,30,30);
+            using(var pen=new Pen(Theme.Accent("blue"),2.3f)){g.DrawLines(pen,new[]{new Point(10,10),new Point(6,16),new Point(10,22)});g.DrawLines(pen,new[]{new Point(22,10),new Point(26,16),new Point(22,22)});g.DrawLine(pen,18,9,14,23);}
+            IntPtr h=bitmap.GetHicon();var icon=(Icon)Icon.FromHandle(h).Clone();Native.DestroyIcon(h);return icon;
+        }
+    }
+    void SessionChanged(object sender,SessionSwitchEventArgs e){locked=e.Reason==SessionSwitchReason.SessionLock;if(locked){Hide();if(flyout!=null)flyout.Hide();}}
+    void StartBackend() {
+        if(Preview || closing || (backend!=null&&!backend.HasExited))return;
+        var node=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),"nodejs","node.exe");
+        if(!File.Exists(node))node="node.exe";
+        try {
+            var p=new Process();p.StartInfo=new ProcessStartInfo(node,"--no-warnings \""+Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"backend.mjs")+"\""){UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true,StandardOutputEncoding=Encoding.UTF8,WorkingDirectory=AppDomain.CurrentDomain.BaseDirectory};
+            p.OutputDataReceived+=(s,e)=>{if(e.Data==null||closing)return;try{var view=new JavaScriptSerializer().Deserialize<View>(e.Data);BeginInvoke((Action)(()=>Apply(view)));}catch{}};
+            p.ErrorDataReceived+=(s,e)=>{};p.Start();backend=p;p.BeginOutputReadLine();p.BeginErrorReadLine();
+        }catch {Data=View.Offline();Data.diagnostic="无法启动数据组件，请确认 Node.js 24 已安装";}
+        nextStart=DateTime.UtcNow.AddSeconds(10);
+    }
+    void Apply(View data) {
+        if(data==null || data.tasks==null)return;
+        Data=data;lastData=DateTime.UtcNow;AccessibleName=data.headline+"，"+data.quotaText;
+        tray.Text=("Codex · "+data.headline+"\n"+data.quotaText).Substring(0,Math.Min(63,("Codex · "+data.headline+"\n"+data.quotaText).Length));
+        string tooltip=String.Join("\n",(data.windows??new Limit[0]).Select(w=>w.label+"剩余 "+Math.Floor(w.remaining)+"%"+(w.resetsAt.HasValue?" · "+Epoch(w.resetsAt.Value*1000).ToLocalTime().ToString("M月d日 HH:mm")+" 重置":"")));
+        tip.SetToolTip(this,data.headline+"\n"+(tooltip.Length>0?tooltip+"\n账户共享额度 · 点击查看任务":data.diagnostic));
+        Invalidate();if(flyout!=null && flyout.Visible)flyout.RefreshData();
+    }
+    public static DateTime Epoch(double ms){return new DateTime(1970,1,1,0,0,0,DateTimeKind.Utc).AddMilliseconds(ms);}
+    void Tick() {
+        if(!Preview && lastData!=DateTime.MinValue && (DateTime.UtcNow-lastData).TotalSeconds>15 && Data.connected){Data=View.Offline();Data.diagnostic="连接中断，正在重新同步";Invalidate();if(flyout!=null)flyout.RefreshData();}
+        if((backend==null||backend.HasExited)&&DateTime.UtcNow>=nextStart)StartBackend();
+        if(DateTime.UtcNow>=nextMeasure&&!measuring){measuring=true;nextMeasure=DateTime.UtcNow.AddSeconds(4);ThreadPool.QueueUserWorkItem(s=>Measure());}
+        IntPtr bar=Native.FindWindow("Shell_TrayWnd",null);
+        Rectangle rect=Native.Rect(bar);Rectangle screen=Screen.FromHandle(bar).Bounds;
+        bool hidden=locked||bar==IntPtr.Zero||!Native.IsWindowVisible(bar)||rect.Top>=screen.Bottom-4||rect.Bottom>screen.Bottom+4||rect.Width<rect.Height||Native.Fullscreen(Handle,flyout==null?IntPtr.Zero:flyout.Handle,screen);
+        if(Environment.GetCommandLineArgs().Contains("--diagnostics"))try{File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"diagnostics.json"),new JavaScriptSerializer().Serialize(new{hidden=hidden,place=safeArea.ToString(),bar=rect.ToString(),age=(DateTime.UtcNow-measured).TotalSeconds,measuring=measuring,visible=Visible,dpi=Native.GetDpiForWindow(bar),headline=Data.headline}));}catch{}
+        DpiScale=Native.GetDpiForWindow(bar)/96f;
+        if(DpiScale<=0)DpiScale=1;
+        if(hidden || safeArea.IsEmpty || (DateTime.UtcNow-measured).TotalSeconds>12){Hide();if(hidden&&flyout!=null)flyout.Hide();return;}
+        if(Bounds!=safeArea){Bounds=safeArea;Theme.Round(this,S(7));}
+        if(!Visible)Show();Native.SetWindowPos(Handle,new IntPtr(-1),0,0,0,0,0x13);
+        if(flyout!=null&&flyout.Visible)flyout.Invalidate(true);
+    }
+    void Measure() {
+        Rectangle place=Rectangle.Empty;
+        try {
+            IntPtr bar=Native.FindWindow("Shell_TrayWnd",null);Rectangle rect=Native.Rect(bar);
+            if(bar!=IntPtr.Zero){
+                var root=AutomationElement.FromHandle(bar);
+                var buttons=root.FindAll(TreeScope.Descendants,new OrCondition(new PropertyCondition(AutomationElement.ControlTypeProperty,ControlType.Button),new PropertyCondition(AutomationElement.ControlTypeProperty,ControlType.CheckBox),new PropertyCondition(AutomationElement.ControlTypeProperty,ControlType.ListItem)));
+                int first=rect.Right;
+                foreach(AutomationElement button in buttons){var r=button.Current.BoundingRectangle;if(!button.Current.IsOffscreen&&r.Width>0&&r.Height>0&&r.Right>rect.Left&&r.Top<rect.Bottom&&r.Bottom>rect.Top)first=Math.Min(first,(int)r.Left);}
+                // ponytail: primary taskbar only; unknown occupancy falls back to tray instead of guessing.
+                if(buttons.Count>0)place=Placement.Widget(rect,(int)Native.GetDpiForWindow(bar),first);
+            }
+        }catch{}
+        if(!closing)try{BeginInvoke((Action)(()=>{safeArea=place;measured=DateTime.UtcNow;measuring=false;}));}catch{}
+    }
+    protected override void OnPaint(PaintEventArgs e) {
+        e.Graphics.Clear(hover?Color.FromArgb(42,45,51):Theme.Bg);
+        using(var brush=new SolidBrush(Theme.Accent(Data.tone)))e.Graphics.FillRectangle(brush,S(9),S(10),S(2),Height-S(20));
+        using(var font=Theme.Font(S(12),true))Theme.TextAt(e.Graphics,Data.headline,font,Theme.Text,new Rectangle(S(19),S(3),Width-S(29),S(20)));
+        using(var font=Theme.Font(S(10)))Theme.TextAt(e.Graphics,Data.quotaText,font,Theme.Muted,new Rectangle(S(19),S(22),Width-S(29),S(14)));
+    }
+    public void Toggle() {
+        if(flyout==null||flyout.IsDisposed)flyout=new Flyout(this);
+        if(flyout.Visible){flyout.Hide();return;}
+        tip.Hide(this);tip.Active=false;flyout.RefreshData();flyout.Show();flyout.Activate();Native.SetForegroundWindow(flyout.Handle);
+    }
+    public void RestoreTooltip(){tip.Active=true;}
+    public void OpenTask(string id) {
+        if(Preview)return;
+        if(flyout!=null)flyout.Hide();
+        try {Process.Start(new ProcessStartInfo(id==null?"codex://launch":"codex://threads/"+Uri.EscapeDataString(id)){UseShellExecute=true});}
+        catch {tray.ShowBalloonTip(4000,"无法打开 Codex","请从开始菜单打开 Codex，并选择对应任务。",ToolTipIcon.Info);}
+    }
+    protected override void OnFormClosed(FormClosedEventArgs e) {
+        closing=true;timer.Stop();SystemEvents.SessionSwitch-=SessionChanged;
+        if(flyout!=null)flyout.Dispose();tray.Visible=false;tray.Dispose();tip.Dispose();appIcon.Dispose();
+        try {if(backend!=null&&!backend.HasExited)backend.StandardInput.Close();}catch{}
+        base.OnFormClosed(e);
+    }
+}
+
+class Flyout : Form {
+    readonly Peek owner;readonly Panel list=new Panel();readonly Button open=new Button();readonly Label empty=new Label();
+    string ids="";bool layingOut;Font footerFont,emptyFont;
+    int S(float v){return owner.S(v);}
+    public Flyout(Peek parent) {
+        owner=parent;Text="Codex 本机任务";AccessibleName=Text;AutoScaleMode=AutoScaleMode.None;FormBorderStyle=FormBorderStyle.None;ShowInTaskbar=Peek.Review;StartPosition=FormStartPosition.Manual;TopMost=true;BackColor=Theme.Bg;DoubleBuffered=true;KeyPreview=true;
+        list.AutoScroll=true;list.BackColor=Theme.Bg;Controls.Add(list);
+        empty.TextAlign=ContentAlignment.MiddleCenter;empty.ForeColor=Theme.Muted;empty.BackColor=Theme.Bg;list.Controls.Add(empty);
+        open.Text="打开 Codex  ↗";open.AccessibleName="打开 Codex";open.FlatStyle=FlatStyle.Flat;open.FlatAppearance.BorderSize=0;open.ForeColor=Theme.Text;open.BackColor=Theme.Bg;open.Cursor=Cursors.Hand;open.Click+=(s,e)=>owner.OpenTask(null);Controls.Add(open);
+        Deactivate+=(s,e)=>Hide();VisibleChanged+=(s,e)=>{if(!Visible)owner.RestoreTooltip();};
+    }
+    protected override bool ProcessCmdKey(ref Message msg,Keys key){if(key==Keys.Escape){Hide();return true;}return base.ProcessCmdKey(ref msg,key);}
+    public void RefreshData() {
+        if(layingOut)return;layingOut=true;
+        try {
+            View data=owner.Data;AccessibleName="Codex 本机任务，"+data.running+" 项运行，"+data.waiting+" 项待处理";Rectangle work=Screen.FromControl(owner).WorkingArea;
+            int height=S(126+Math.Max(1,data.tasks.Length)*104);height=Math.Min(height,(int)(work.Height*.7));
+            Rectangle anchor=owner.Visible?owner.Bounds:new Rectangle(Cursor.Position,new Size(1,1));
+            Bounds=Placement.Popup(anchor,work,S(420),height,S(8));Theme.Round(this,S(12));
+            Point scroll=list.AutoScrollPosition;
+            list.Bounds=new Rectangle(S(16),S(72),Width-S(32),Height-S(118));
+            open.Bounds=new Rectangle(Width-S(126),Height-S(38),S(112),S(26));
+            if(footerFont==null||footerFont.Size!=S(11)){var old=footerFont;footerFont=Theme.Font(S(11));open.Font=footerFont;if(old!=null)old.Dispose();}
+            string next=String.Join("|",data.tasks.Select(t=>t.id));
+            if(ids!=next){foreach(var row in list.Controls.OfType<TaskRow>().ToArray()){list.Controls.Remove(row);row.Dispose();}ids=next;foreach(var task in data.tasks){var row=new TaskRow(owner);row.Item=task;row.Click+=(s,e)=>owner.OpenTask(((TaskRow)s).Item.id);list.Controls.Add(row);}}
+            int y=0,index=0;
+            foreach(var row in list.Controls.OfType<TaskRow>()){row.Item=data.tasks[index++];row.Bounds=new Rectangle(0,y+scroll.Y,list.ClientSize.Width,S(104));row.AccessibleName=row.Item.title+"，"+row.Item.detail;row.AccessibleDescription=row.Item.progress;row.Invalidate();y+=S(104);}
+            list.AutoScrollMinSize=new Size(0,y);
+            empty.Visible=data.tasks.Length==0;empty.Bounds=new Rectangle(0,0,list.ClientSize.Width,list.ClientSize.Height);empty.Text=data.connected?"暂无运行任务\n新的任务开始后会出现在这里":data.diagnostic;
+            if(emptyFont==null||emptyFont.Size!=S(12)){var old=emptyFont;emptyFont=Theme.Font(S(12));empty.Font=emptyFont;if(old!=null)old.Dispose();}
+            Invalidate();
+        }finally{layingOut=false;}
+    }
+    protected override void OnPaint(PaintEventArgs e) {
+        var g=e.Graphics;g.Clear(Theme.Bg);View d=owner.Data;
+        using(var font=Theme.Font(S(17),true))Theme.TextAt(g,"Codex",font,Theme.Text,new Rectangle(S(21),S(14),S(80),S(27)));
+        using(var font=Theme.Font(S(12)))Theme.TextAt(g,"本机任务",font,Theme.Muted,new Rectangle(S(98),S(16),S(100),S(25)));
+        using(var font=Theme.Font(S(11)))Theme.TextAt(g,d.running+" 项运行   ·   "+d.waiting+" 项待处理",font,Theme.Muted,new Rectangle(S(21),S(43),Width-S(42),S(20)));
+        using(var pen=new Pen(Theme.Line)){g.DrawLine(pen,S(20),Height-S(46),Width-S(20),Height-S(46));}
+        string sync=owner.Preview?"界面预览 · 演示数据":d.connected?"已连接 · 本机实时状态":"状态未同步";
+        using(var font=Theme.Font(S(10)))Theme.TextAt(g,sync,font,Theme.Muted,new Rectangle(S(21),Height-S(36),Width-S(160),S(23)));
+    }
+}
+
+class TaskRow : Button {
+    readonly Peek owner;public TaskItem Item;bool hover;
+    int S(float v){return owner.S(v);}
+    public TaskRow(Peek parent){owner=parent;SetStyle(ControlStyles.UserPaint|ControlStyles.AllPaintingInWmPaint|ControlStyles.OptimizedDoubleBuffer,true);Cursor=Cursors.Hand;FlatStyle=FlatStyle.Flat;TabStop=true;MouseEnter+=(s,e)=>{hover=true;Invalidate();};MouseLeave+=(s,e)=>{hover=false;Invalidate();};}
+    protected override void OnPaint(PaintEventArgs e) {
+        if(Item==null)return;var g=e.Graphics;g.Clear(hover||Focused?Color.FromArgb(39,43,50):Theme.Bg);
+        string tone=Item.state=="approval"||Item.state=="input"?"amber":Item.state=="failed"?"red":"blue";
+        string label=Item.state=="approval"?"等待确认":Item.state=="input"?"等待回复":Item.state=="failed"?"异常":"运行中";
+        using(var font=Theme.Font(S(12),true))Theme.TextAt(g,Item.title,font,Theme.Text,new Rectangle(S(6),S(5),Width-S(92),S(23)));
+        using(var font=Theme.Font(S(10)))Theme.TextAt(g,label,font,Theme.Accent(tone),new Rectangle(Width-S(72),S(6),S(68),S(22)));
+        using(var font=Theme.Font(S(11)))Theme.TextAt(g,Item.detail,font,Theme.Text,new Rectangle(S(6),S(30),Width-S(12),S(23)));
+        using(var font=Theme.Font(S(10)))Theme.TextAt(g,String.IsNullOrWhiteSpace(Item.progress)?"点击打开原任务，查看执行记录":Item.progress,font,Theme.Muted,new Rectangle(S(6),S(54),Width-S(12),S(21)));
+        double? since=Item.waitingSince??Item.startedAt;
+        string elapsed="";if(since.HasValue){var t=DateTime.UtcNow-Peek.Epoch(since.Value);if(t.TotalSeconds<0)t=TimeSpan.Zero;elapsed=(Item.waitingSince.HasValue?"已等待 ":"本轮已用 ")+(t.TotalHours>=1?((int)t.TotalHours)+"小时 ":"")+t.Minutes.ToString("00")+":"+t.Seconds.ToString("00");}
+        using(var font=Theme.Font(S(9)))Theme.TextAt(g,elapsed,font,Theme.Muted,new Rectangle(S(6),S(78),Width-S(85),S(19)));
+        using(var font=Theme.Font(S(10)))Theme.TextAt(g,tone=="amber"?"去处理  ↗":"打开  ↗",font,Theme.Accent(tone),new Rectangle(Width-S(73),S(77),S(68),S(20)));
+        using(var pen=new Pen(Theme.Line))g.DrawLine(pen,S(6),Height-1,Width-S(6),Height-1);
+        if(Focused&&ShowFocusCues)ControlPaint.DrawFocusRectangle(g,new Rectangle(1,1,Width-3,Height-3));
+    }
+}
+
+static class Native {
+    [StructLayout(LayoutKind.Sequential)]public struct RECT {public int Left,Top,Right,Bottom;}
+    [DllImport("user32.dll",CharSet=CharSet.Unicode)]public static extern IntPtr FindWindow(string cls,string title);
+    [DllImport("user32.dll")]static extern bool GetWindowRect(IntPtr h,out RECT rect);
+    [DllImport("user32.dll")]public static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll")]public static extern uint GetDpiForWindow(IntPtr h);
+    [DllImport("user32.dll")]public static extern bool SetProcessDpiAwarenessContext(IntPtr context);
+    [DllImport("user32.dll")]public static extern bool SetWindowPos(IntPtr h,IntPtr after,int x,int y,int w,int height,uint flags);
+    [DllImport("user32.dll")]public static extern bool SetForegroundWindow(IntPtr h);
+    [DllImport("user32.dll")]public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll",CharSet=CharSet.Unicode)]static extern int GetClassName(IntPtr h,StringBuilder name,int count);
+    [DllImport("user32.dll")]public static extern bool DestroyIcon(IntPtr h);
+    public static Rectangle Rect(IntPtr h){RECT r;if(h==IntPtr.Zero||!GetWindowRect(h,out r))return Rectangle.Empty;return Rectangle.FromLTRB(r.Left,r.Top,r.Right,r.Bottom);}
+    public static bool Fullscreen(IntPtr widget,IntPtr popup,Rectangle screen){IntPtr h=GetForegroundWindow();if(h==widget||h==popup)return false;var cls=new StringBuilder(128);GetClassName(h,cls,128);if(new[]{"Progman","WorkerW","Shell_TrayWnd"}.Contains(cls.ToString()))return false;var r=Rect(h);return r.Left<=screen.Left&&r.Top<=screen.Top&&r.Right>=screen.Right&&r.Bottom>=screen.Bottom;}
+    [DllImport("user32.dll")]static extern IntPtr GetThreadDesktop(int id);
+    [DllImport("user32.dll",CharSet=CharSet.Unicode)]static extern bool GetUserObjectInformation(IntPtr h,int index,StringBuilder text,int length,out int needed);
+    public static string DesktopName(int thread){var text=new StringBuilder(256);int needed;GetUserObjectInformation(GetThreadDesktop(thread),2,text,512,out needed);return text.ToString();}
+}
+
+static class Placement {
+    public static Rectangle Widget(Rectangle bar, int dpi, int firstButton) {
+        double scale=dpi/96.0;
+        int margin=(int)Math.Round(8*scale),height=(int)Math.Round(40*scale);
+        int width=Math.Min((int)Math.Round(320*scale),firstButton-bar.Left-margin*2);
+        if(width<180*scale || bar.Height<height) return Rectangle.Empty;
+        return new Rectangle(bar.Left+margin,bar.Top+(bar.Height-height)/2,width,height);
+    }
+    public static Rectangle Popup(Rectangle anchor, Rectangle work, int width, int height, int gap) {
+        width=Math.Min(width,work.Width);height=Math.Min(height,work.Height);
+        return new Rectangle(Math.Max(work.Left,Math.Min(anchor.Left,work.Right-width)),Math.Max(work.Top,Math.Min(anchor.Top-gap-height,work.Bottom-height)),width,height);
+    }
+}

@@ -1,0 +1,15 @@
+dist/
+build/
+node_modules/
+*.exe
+*.dll
+*.pdb
+*.lnk
+*.log
+*.sqlite*
+*.db*
+diagnostics.json
+.env
+.env.*
+__pycache__/
+.vs/
