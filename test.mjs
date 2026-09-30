@@ -15,6 +15,37 @@ test('one running conversation shows its actual operation', () => {
   assert.equal(view.running, 1);
 });
 
+test('reply status shows the current public text and changes as streamed text advances', () => {
+  const feed=new TaskFeed();
+  feed.accept({version:11,params:{hostId:'local',conversationId:'reply',change:{type:'snapshot',revision:1,conversationState:{title:'完善状态栏',source:'vscode',threadRuntimeStatus:{type:'active'},turns:[{turnStartedAtMs:1,status:'inProgress',items:[{type:'agentMessage',text:'正在检查 Git 状态'}]}]}}}});
+  assert.equal(present(feed.tasks()).headline,'回复 · 正在检查 Git 状态');
+  feed.accept({version:11,params:{hostId:'local',conversationId:'reply',change:{type:'patches',baseRevision:1,revision:2,patches:[{op:'replace',path:['turns',0,'items',0,'text'],value:'正在检查 Git 状态\n开始更新 README 文档'}]}}});
+  assert.equal(present(feed.tasks()).headline,'回复 · 开始更新 README 文档');
+  const longText='🟦'.repeat(30)+'A';
+  feed.accept({version:11,params:{hostId:'local',conversationId:'reply',change:{type:'patches',baseRevision:2,revision:3,patches:[{op:'replace',path:['turns',0,'items',0,'text'],value:longText}]}}});
+  const previous=present(feed.tasks()).headline;
+  assert.ok(previous.startsWith('回复 · …'));
+  assert.ok(previous.isWellFormed());
+  feed.accept({version:11,params:{hostId:'local',conversationId:'reply',change:{type:'patches',baseRevision:3,revision:4,patches:[{op:'replace',path:['turns',0,'items',0,'text'],value:longText+'B'}]}}});
+  assert.notEqual(present(feed.tasks()).headline,previous);
+  assert.ok(present(feed.tasks()).headline.endsWith('AB'));
+});
+
+test('tool status shows its public action title or exact tool name', () => {
+  const feed=new TaskFeed();
+  const show=item=>{feed.accept({version:11,params:{hostId:'local',conversationId:'tool',change:{type:'snapshot',revision:1,conversationState:{source:'vscode',threadRuntimeStatus:{type:'active'},turns:[{status:'inProgress',items:[item]}]}}}});return present(feed.tasks()).headline;};
+  assert.equal(show({type:'mcpToolCall',status:'inProgress',server:'node_repl',tool:'js',arguments:{title:'检查状态栏文字显示',code:'ignored'}}),'工具 · 检查状态栏文字显示');
+  assert.equal(show({type:'mcpToolCall',status:'inProgress',server:'github',tool:'get_commit',arguments:{}}),'工具 · github.get_commit');
+});
+
+test('missing action content falls back to the task title without reusing a completed command or internal reasoning', () => {
+  const feed=new TaskFeed();
+  const show=item=>{feed.accept({version:11,params:{hostId:'local',conversationId:'context',change:{type:'snapshot',revision:1,conversationState:{title:'修复状态栏内容摘要',source:'vscode',threadRuntimeStatus:{type:'active'},turns:[{status:'inProgress',items:[item]}]}}}});return present(feed.tasks()).headline;};
+  assert.equal(show({type:'reasoning',content:['INTERNAL_NOT_FOR_DISPLAY']}),'思考 · 修复状态栏内容摘要');
+  assert.equal(show({type:'agentMessage',text:''}),'回复 · 修复状态栏内容摘要');
+  assert.equal(show({type:'commandExecution',status:'completed',command:'git old-command'}),'任务 · 修复状态栏内容摘要');
+});
+
 test('command status includes the command being executed in both the widget and task details', () => {
   const feed=new TaskFeed();
   const show=command=>{
@@ -22,11 +53,18 @@ test('command status includes the command being executed in both the widget and 
     return present(feed.tasks());
   };
   const view=show('git status --short\r\n git diff --stat');
-  assert.equal(view.headline,'正在执行命令 · git status --short git diff --stat');
-  assert.equal(view.tasks[0].detail,view.headline);
-  assert.equal(show('node --test test.mjs').headline,'正在运行测试 · node --test test.mjs');
-  assert.equal(show('"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command \'git status --short\'').headline,'正在执行命令 · git status --short');
+  assert.equal(view.headline,'命令 · git status --short git diff --stat');
+  assert.equal(view.tasks[0].detail,'正在执行命令 · git status --short git diff --stat');
+  assert.equal(show('node --test test.mjs').headline,'测试 · node --test test.mjs');
+  assert.equal(show('"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command \'git status --short\'').headline,'命令 · git status --short');
   assert.equal(show(null).headline,'正在执行命令');
+});
+
+test('search and file-list command actions keep their actual command content', () => {
+  const feed=new TaskFeed();
+  const show=(type,command)=>{feed.accept({version:11,params:{hostId:'local',conversationId:'search',change:{type:'snapshot',revision:1,conversationState:{threadRuntimeStatus:{type:'active'},turns:[{status:'inProgress',items:[{type:'commandExecution',status:'inProgress',command,commandActions:[{type}]}]}]}}}});return present(feed.tasks()).headline;};
+  assert.equal(show('search','rg CodexPeek App.cs'),'搜索 · rg CodexPeek App.cs');
+  assert.equal(show('listFiles','rg --files'),'文件 · rg --files');
 });
 
 test('desktop snapshots and patches update a conversation, exclude internal work, and reject missing revisions', () => {
@@ -95,7 +133,7 @@ test('completed operations are not presented as running; unread failed turns rem
   const state={title:'任务',source:'vscode',threadRuntimeStatus:{type:'active',activeFlags:[]},turns:[{turnStartedAtMs:1,status:'inProgress',items:[{type:'fileChange',status:'completed',changes:[{path:'a.txt'}]}]}]};
   const update=s=>feed.accept({version:11,params:{hostId:'local',conversationId:'a',change:{type:'snapshot',revision:1,conversationState:s}}});
   update(state);
-  assert.equal(feed.tasks()[0].detail,'正在执行任务');
+  assert.equal(feed.tasks()[0].detail,'正在执行任务 · 任务');
   update({...state,hasUnreadTurn:true,threadRuntimeStatus:{type:'idle'},turns:[{status:'failed',error:{message:'test failure'}}]});
   assert.equal(feed.tasks()[0].state,'failed');
   update({...state,hasUnreadTurn:false,threadRuntimeStatus:{type:'idle'},turns:[{status:'failed'}]});
