@@ -91,10 +91,12 @@ class LayoutTests {
             flyout.RefreshData();
             Check(list.AutoScrollPosition.Y==-100,"adding a task preserves the task list scroll position");
             Check(list.Controls.OfType<TaskRow>().All(row=>row.Right<=list.ClientSize.Width),"added cards leave room for the scrollbar");
+            Check(!list.HorizontalScroll.Visible,"added cards never need horizontal scrolling");
             owner.Data.tasks=owner.Data.tasks.Take(owner.Data.tasks.Length-1).ToArray();
             flyout.RefreshData();
             Check(list.AutoScrollPosition.Y==-100,"removing a task preserves the task list scroll position");
             Check(list.Controls.OfType<TaskRow>().All(row=>row.Right<=list.ClientSize.Width),"remaining cards leave room for the scrollbar");
+            Check(!list.HorizontalScroll.Visible,"remaining cards never need horizontal scrolling");
         }
         Console.WriteLine("PASS: native taskbar ownership and recovery, layout, 100% / 175% DPI, collision and popup bounds");
     }

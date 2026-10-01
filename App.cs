@@ -203,7 +203,7 @@ class Flyout : Form {
     int S(float v){return owner.S(v);}
     public Flyout(Peek parent) {
         owner=parent;Text="Codex 本机任务";AccessibleName=Text;AutoScaleMode=AutoScaleMode.None;FormBorderStyle=FormBorderStyle.None;ShowInTaskbar=Peek.Review;StartPosition=FormStartPosition.Manual;TopMost=true;BackColor=Theme.Bg;DoubleBuffered=true;KeyPreview=true;
-        list.AutoScroll=true;list.BackColor=Theme.Bg;list.Layout+=(s,e)=>{foreach(var row in list.Controls.OfType<TaskRow>())row.Width=list.ClientSize.Width;};Controls.Add(list);
+        list.AutoScroll=true;list.BackColor=Theme.Bg;list.Layout+=(s,e)=>{foreach(var row in list.Controls.OfType<TaskRow>())if(row.Width!=list.ClientSize.Width)row.Width=list.ClientSize.Width;};Controls.Add(list);
         empty.TextAlign=ContentAlignment.MiddleCenter;empty.ForeColor=Theme.Text;empty.BackColor=Theme.Bg;list.Controls.Add(empty);
         hint.TextAlign=ContentAlignment.MiddleCenter;hint.ForeColor=Theme.Muted;hint.BackColor=Theme.Bg;list.Controls.Add(hint);
         open.Text="打开 Codex  ↗";open.AccessibleName="打开 Codex";open.FlatStyle=FlatStyle.Flat;open.FlatAppearance.BorderSize=0;open.ForeColor=Theme.Text;open.BackColor=Theme.Bg;open.Cursor=Cursors.Hand;open.Click+=(s,e)=>owner.OpenTask(null);Controls.Add(open);
@@ -220,10 +220,9 @@ class Flyout : Form {
     }
     protected override bool ProcessCmdKey(ref Message msg,Keys key){if(key==Keys.Escape){Hide();return true;}return base.ProcessCmdKey(ref msg,key);}
     public void RefreshData() {
-        if(layingOut)return;layingOut=true;
+        if(layingOut)return;layingOut=true;Point scroll=list.AutoScrollPosition;list.SuspendLayout();
         try {
             View data=owner.Data;AccessibleName="Codex 本机任务，"+data.running+" 项运行，"+data.waiting+" 项待处理";Rectangle work=Screen.FromControl(owner).WorkingArea;
-            Point scroll=list.AutoScrollPosition;
             int height=S(data.tasks.Length==0?184:128+data.tasks.Length*132);height=Math.Min(height,(int)(work.Height*.7));
             Rectangle anchor=owner.Visible?owner.Bounds:new Rectangle(Cursor.Position,new Size(1,1));
             Bounds=Placement.Popup(anchor,work,S(460),height,S(8));
@@ -236,15 +235,14 @@ class Flyout : Form {
             if(footerFont==null||footerFont.Size!=S(12)){var old=footerFont;footerFont=Theme.Font(S(12));open.Font=footerFont;if(old!=null)old.Dispose();}
             string next=String.Join("|",data.tasks.Select(t=>t.id));
             if(ids!=next){foreach(var row in list.Controls.OfType<TaskRow>().ToArray()){list.Controls.Remove(row);row.Dispose();}ids=next;foreach(var task in data.tasks){var row=new TaskRow(owner);row.Item=task;row.Click+=(s,e)=>owner.OpenTask(((TaskRow)s).Item.id);list.Controls.Add(row);}}
-            list.AutoScrollPosition=new Point(0,-scroll.Y);scroll=list.AutoScrollPosition;
-            int y=0,index=0;
-            foreach(var row in list.Controls.OfType<TaskRow>()){row.Item=data.tasks[index++];row.Bounds=new Rectangle(0,y+scroll.Y,list.ClientSize.Width,S(124));row.AccessibleName=row.Item.title+"，"+row.Item.detail;row.AccessibleDescription=row.Item.progress;row.Invalidate();y+=S(132);}
+            int y=0,index=0;Point offset=list.AutoScrollPosition;
+            foreach(var row in list.Controls.OfType<TaskRow>()){row.Item=data.tasks[index++];row.Bounds=new Rectangle(0,y+offset.Y,list.ClientSize.Width,S(124));row.AccessibleName=row.Item.title+"，"+row.Item.detail;row.AccessibleDescription=row.Item.progress;row.Invalidate();y+=S(132);}
             empty.Visible=hint.Visible=data.tasks.Length==0;empty.Bounds=new Rectangle(0,S(8),list.ClientSize.Width,S(28));empty.Text=data.connected?"暂无运行任务":"状态未同步";
             hint.Bounds=new Rectangle(0,S(39),list.ClientSize.Width,S(25));hint.Text=data.connected?"开始新任务后，执行详情会显示在这里":data.diagnostic;
             if(emptyFont==null||emptyFont.Size!=S(14)){var old=emptyFont;emptyFont=Theme.Font(S(14));empty.Font=emptyFont;if(old!=null)old.Dispose();}
             if(hintFont==null||hintFont.Size!=S(12)){var old=hintFont;hintFont=Theme.Font(S(12));hint.Font=hintFont;if(old!=null)old.Dispose();}
             Invalidate();
-        }finally{layingOut=false;}
+        }finally{list.ResumeLayout(true);list.AutoScrollPosition=new Point(0,-scroll.Y);layingOut=false;}
     }
     protected override void OnPaint(PaintEventArgs e) {
         var g=e.Graphics;g.Clear(Surface);View d=owner.Data;
