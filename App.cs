@@ -100,7 +100,7 @@ class Peek : Form {
         timer.Interval=750;timer.Tick+=(s,e)=>Tick();Shown+=(s,e)=>{Hide();if(Preview)Apply(preview);else StartBackend();Tick();timer.Start();if(openAtStart)BeginInvoke((Action)(()=>Toggle()));};
     }
     protected override bool ShowWithoutActivation {get{return true;}}
-    protected override CreateParams CreateParams {get{var cp=base.CreateParams;cp.ExStyle|=0x08000000;if(!Review)cp.ExStyle|=0x80;return cp;}}
+    protected override CreateParams CreateParams {get{var cp=base.CreateParams;cp.Style|=unchecked((int)0x80000000);cp.ExStyle|=0x08000000;if(!Review)cp.ExStyle|=0x80;return cp;}}
     protected override void WndProc(ref Message m) {if(m.Msg==0x21){m.Result=new IntPtr(3);return;}base.WndProc(ref m);}
     static Icon MakeIcon() {
         using(var bitmap=new Bitmap(32,32)) using(var g=Graphics.FromImage(bitmap)) {
@@ -138,12 +138,12 @@ class Peek : Form {
         IntPtr bar=Native.FindWindow("Shell_TrayWnd",null);
         Rectangle rect=Native.Rect(bar);Rectangle screen=Screen.FromHandle(bar).Bounds;
         bool hidden=locked||bar==IntPtr.Zero||!Native.IsWindowVisible(bar)||rect.Top>=screen.Bottom-4||rect.Bottom>screen.Bottom+4||rect.Width<rect.Height||Native.Fullscreen(Handle,flyout==null?IntPtr.Zero:flyout.Handle,screen);
-        if(Environment.GetCommandLineArgs().Contains("--diagnostics"))try{File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"diagnostics.json"),new JavaScriptSerializer().Serialize(new{hidden=hidden,place=safeArea.ToString(),bar=rect.ToString(),age=(DateTime.UtcNow-measured).TotalSeconds,measuring=measuring,visible=Visible,dpi=Native.GetDpiForWindow(bar),headline=Data.headline}));}catch{}
+        if(Environment.GetCommandLineArgs().Contains("--diagnostics"))try{File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"diagnostics.json"),new JavaScriptSerializer().Serialize(new{hidden=hidden,place=safeArea.ToString(),bar=rect.ToString(),age=(DateTime.UtcNow-measured).TotalSeconds,measuring=measuring,visible=Visible,dpi=Native.GetDpiForWindow(bar),headline=Data.headline,handle=Handle.ToInt64(),owner=Native.GetWindow(Handle,4).ToInt64(),barHandle=bar.ToInt64()}));}catch{}
         DpiScale=Native.GetDpiForWindow(bar)/96f;
         if(DpiScale<=0)DpiScale=1;
         if(hidden || safeArea.IsEmpty || (DateTime.UtcNow-measured).TotalSeconds>12){Hide();if(hidden&&flyout!=null)flyout.Hide();return;}
         if(Bounds!=safeArea){Bounds=safeArea;Theme.Round(this,S(7));}
-        if(!Visible)Show();Native.SetWindowPos(Handle,new IntPtr(-1),0,0,0,0,0x13);
+        if(!Visible)Show();Native.AboveTaskbar(Handle,bar);
         if(flyout!=null&&flyout.Visible)flyout.Invalidate(true);
     }
     void Measure() {
@@ -290,6 +290,16 @@ static class Native {
     [DllImport("user32.dll")]public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll",CharSet=CharSet.Unicode)]static extern int GetClassName(IntPtr h,StringBuilder name,int count);
     [DllImport("user32.dll")]public static extern bool DestroyIcon(IntPtr h);
+    [DllImport("user32.dll")]public static extern IntPtr GetWindow(IntPtr h,uint command);
+    [DllImport("user32.dll",EntryPoint="SetWindowLongPtrW")]static extern IntPtr SetWindowLongPtr(IntPtr h,int index,IntPtr value);
+    [DllImport("user32.dll",EntryPoint="SetWindowLongW")]static extern int SetWindowLong(IntPtr h,int index,int value);
+    public static void AboveTaskbar(IntPtr h,IntPtr bar) {
+        // Ownership keeps the entry above the taskbar without repeatedly raising shell menus.
+        // Re-check after Show and when Explorer supplies a replacement taskbar handle.
+        if(GetWindow(h,4)==bar)return;
+        if(IntPtr.Size==8)SetWindowLongPtr(h,-8,bar);else SetWindowLong(h,-8,bar.ToInt32());
+        SetWindowPos(h,new IntPtr(-1),0,0,0,0,0x13);
+    }
     public static Rectangle Rect(IntPtr h){RECT r;if(h==IntPtr.Zero||!GetWindowRect(h,out r))return Rectangle.Empty;return Rectangle.FromLTRB(r.Left,r.Top,r.Right,r.Bottom);}
     public static bool Fullscreen(IntPtr widget,IntPtr popup,Rectangle screen){IntPtr h=GetForegroundWindow();if(h==widget||h==popup)return false;var cls=new StringBuilder(128);GetClassName(h,cls,128);if(new[]{"Progman","WorkerW","Shell_TrayWnd"}.Contains(cls.ToString()))return false;var r=Rect(h);return r.Left<=screen.Left&&r.Top<=screen.Top&&r.Right>=screen.Right&&r.Bottom>=screen.Bottom;}
     [DllImport("user32.dll")]static extern IntPtr GetThreadDesktop(int id);
