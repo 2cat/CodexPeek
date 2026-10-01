@@ -203,7 +203,7 @@ class Flyout : Form {
     int S(float v){return owner.S(v);}
     public Flyout(Peek parent) {
         owner=parent;Text="Codex 本机任务";AccessibleName=Text;AutoScaleMode=AutoScaleMode.None;FormBorderStyle=FormBorderStyle.None;ShowInTaskbar=Peek.Review;StartPosition=FormStartPosition.Manual;TopMost=true;BackColor=Theme.Bg;DoubleBuffered=true;KeyPreview=true;
-        list.AutoScroll=true;list.BackColor=Theme.Bg;Controls.Add(list);
+        list.AutoScroll=true;list.BackColor=Theme.Bg;list.Layout+=(s,e)=>{foreach(var row in list.Controls.OfType<TaskRow>())row.Width=list.ClientSize.Width;};Controls.Add(list);
         empty.TextAlign=ContentAlignment.MiddleCenter;empty.ForeColor=Theme.Text;empty.BackColor=Theme.Bg;list.Controls.Add(empty);
         hint.TextAlign=ContentAlignment.MiddleCenter;hint.ForeColor=Theme.Muted;hint.BackColor=Theme.Bg;list.Controls.Add(hint);
         open.Text="打开 Codex  ↗";open.AccessibleName="打开 Codex";open.FlatStyle=FlatStyle.Flat;open.FlatAppearance.BorderSize=0;open.ForeColor=Theme.Text;open.BackColor=Theme.Bg;open.Cursor=Cursors.Hand;open.Click+=(s,e)=>owner.OpenTask(null);Controls.Add(open);

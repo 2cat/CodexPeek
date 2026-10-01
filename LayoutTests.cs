@@ -79,10 +79,11 @@ class LayoutTests {
             flyout.RefreshData();
             Check(flyout.Height==184,"empty flyout is compact at 100% DPI");
             owner.Data.tasks=Enumerable.Range(0,12).Select(i=>new TaskItem{id=i.ToString(),title="任务 "+i}).ToArray();
-            flyout.RefreshData();
+            flyout.RefreshData();flyout.Show();Application.DoEvents();
             var list=flyout.Controls.OfType<Panel>().Single();
             Check(flyout.Height<=Screen.FromControl(owner).WorkingArea.Height*.7,"many tasks stay within the screen height cap");
             Check(list.VerticalScroll.Visible,"many tasks can scroll");
+            Check(!list.HorizontalScroll.Visible,"showing a long list never adds a horizontal scrollbar");
             Check(list.Controls.OfType<TaskRow>().All(row=>row.Right<=list.ClientSize.Width),"cards leave room for the scrollbar");
             list.AutoScrollPosition=new Point(0,100);flyout.RefreshData();
             Check(list.AutoScrollPosition.Y==-100,"live updates preserve the task list scroll position");
