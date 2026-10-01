@@ -114,7 +114,10 @@ class LayoutTests {
             owner.DpiScale=1.75f;flyout.RefreshData();Application.DoEvents();
             Check(list.Controls.OfType<TaskRow>().All(row=>row.Height==217),"history cards use readable dimensions at 175% DPI");
             owner.DpiScale=1;flyout.RefreshData();Application.DoEvents();
-            Check(!list.HorizontalScroll.Visible&&!list.VerticalScroll.Visible,"shrinking to three recent tasks removes scrollbars");
+            Check(!list.HorizontalScroll.Visible,"shrinking history never adds a horizontal scrollbar");
+            // Three cards can exceed the 70% screen cap on a small desktop; one fits.
+            owner.Data.recentTasks=owner.Data.recentTasks.Take(1).ToArray();flyout.RefreshData();Application.DoEvents();
+            Check(!list.HorizontalScroll.Visible&&!list.VerticalScroll.Visible,"shrinking to a recent task that fits removes scrollbars");
             Check(list.AutoScrollPosition==Point.Empty,"shrinking history clears the old scroll offset");
         }
         Console.WriteLine("PASS: native taskbar ownership and recovery, layout, 100% / 175% DPI, collision and popup bounds");
