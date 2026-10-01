@@ -195,8 +195,13 @@ class Peek : Form {
     }
 }
 
+class TaskList : Panel {
+    public TaskList(){DoubleBuffered=true;}
+    protected override void OnPaintBackground(PaintEventArgs e) {var popup=FindForm() as Flyout;e.Graphics.Clear(popup==null?Theme.Bg:popup.Surface);}
+}
+
 class Flyout : Form {
-    readonly Peek owner;readonly Panel list=new Panel();readonly Button open=new Button();readonly Label empty=new Label(),hint=new Label();
+    readonly Peek owner;readonly Panel list=new TaskList();readonly Button open=new Button();readonly Label empty=new Label(),hint=new Label();
     string ids="";bool layingOut,backdrop;Font footerFont,emptyFont,hintFont;
     // Limit background brightness so secondary text remains readable over Acrylic.
     public Color Surface {get{return backdrop?Color.FromArgb(195,Theme.Bg):Theme.Bg;}}
@@ -214,7 +219,7 @@ class Flyout : Form {
     protected override void WndProc(ref Message m) {if(m.Msg==0x83&&m.WParam!=IntPtr.Zero){m.Result=IntPtr.Zero;return;}if(m.Msg==0x84){m.Result=new IntPtr(1);return;}base.WndProc(ref m);}
     protected override void OnHandleCreated(EventArgs e) {
         base.OnHandleCreated(e);backdrop=Native.PopupChrome(Handle,Theme.Transparency);
-        if(backdrop){BackColor=Color.Black;list.BackColor=empty.BackColor=hint.BackColor=open.BackColor=Color.Transparent;}
+        if(backdrop){BackColor=Color.Black;empty.BackColor=hint.BackColor=open.BackColor=Color.Transparent;}
         open.FlatAppearance.MouseOverBackColor=open.FlatAppearance.MouseDownBackColor=Color.FromArgb(45,45,49);
         Native.SetWindowPos(Handle,IntPtr.Zero,0,0,0,0,0x37);
     }
@@ -249,7 +254,7 @@ class Flyout : Form {
         using(var font=Theme.Font(S(16),true))Theme.TextAt(g,"Codex",font,Theme.Text,new Rectangle(S(22),S(15),S(70),S(29)));
         using(var font=Theme.Font(S(13)))Theme.TextAt(g,"本机任务",font,Theme.Muted,new Rectangle(S(96),S(16),S(108),S(28)));
         if(d.tasks.Length>0)using(var font=Theme.Font(S(12)))Theme.TextAt(g,d.running+" 项运行   ·   "+d.waiting+" 项待处理",font,Theme.Muted,new Rectangle(S(22),S(48),Width-S(44),S(23)));
-        using(var pen=new Pen(Color.FromArgb(35,Color.White))){g.DrawLine(pen,S(22),Height-S(54),Width-S(22),Height-S(54));}
+        using(var pen=new Pen(Color.FromArgb(35,Color.White))){g.DrawLine(pen,S(22),Height-S(48),Width-S(22),Height-S(48));}
         string sync=owner.Preview?"界面预览 · 演示数据":d.connected?"已连接":"状态未同步";
         using(var font=Theme.Font(S(12)))Theme.TextAt(g,sync,font,Theme.Muted,new Rectangle(S(22),Height-S(41),Width-S(176),S(28)));
     }
