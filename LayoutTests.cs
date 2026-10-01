@@ -3,12 +3,18 @@ using System.Drawing;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
+using System.Linq;
 using System.Windows.Forms;
 class LayoutTests {
     class PassiveForm : Form {
         public PassiveForm(){FormBorderStyle=FormBorderStyle.None;ShowInTaskbar=false;TopMost=true;StartPosition=FormStartPosition.Manual;}
         protected override bool ShowWithoutActivation {get{return true;}}
-        protected override CreateParams CreateParams {get{var p=base.CreateParams;p.Style|=unchecked((int)0x80000000);p.ExStyle|=0x08000080;return p;}}
+        protected override CreateParams CreateParams {get{var p=base.CreateParams;p.Style|=unchecked((int)0x80000000)|0x00C40000;p.ExStyle|=0x08000080;return p;}}
+        protected override void WndProc(ref Message m) {if(m.Msg==0x21){m.Result=new IntPtr(3);return;}if(m.Msg==0x83&&m.WParam!=IntPtr.Zero){m.Result=IntPtr.Zero;return;}if(m.Msg==0x84){m.Result=new IntPtr(1);return;}base.WndProc(ref m);}
+        protected override void OnHandleCreated(EventArgs e) {
+            base.OnHandleCreated(e);BackColor=Native.PopupChrome(Handle,Theme.Transparency)?Color.Black:Theme.Bg;
+            Native.SetWindowPos(Handle,IntPtr.Zero,0,0,0,0,0x37);
+        }
     }
     [StructLayout(LayoutKind.Sequential)]struct POINT {public int X,Y;}
     [DllImport("user32.dll")]static extern IntPtr WindowFromPoint(POINT point);
@@ -65,13 +71,29 @@ class LayoutTests {
         using(var owner=new Peek()) using(var flyout=new Flyout(owner)) {
             owner.Data=View.Offline();owner.DpiScale=1.75f;
             flyout.RefreshData();
-            Check(flyout.Height==280,"empty flyout is compact at 175% DPI");
+            Check(flyout.Height==322,"empty flyout has readable spacing at 175% DPI");
             owner.Data.tasks=new[]{new TaskItem{id="a"}};
             flyout.RefreshData();
-            Check(flyout.Height==402,"active flyout retains room for task details at 175% DPI");
+            Check(flyout.Height==455,"active flyout retains room for larger task details at 175% DPI");
             owner.Data=View.Offline();owner.DpiScale=1;
             flyout.RefreshData();
-            Check(flyout.Height==160,"empty flyout is compact at 100% DPI");
+            Check(flyout.Height==184,"empty flyout is compact at 100% DPI");
+            owner.Data.tasks=Enumerable.Range(0,12).Select(i=>new TaskItem{id=i.ToString(),title="任务 "+i}).ToArray();
+            flyout.RefreshData();
+            var list=flyout.Controls.OfType<Panel>().Single();
+            Check(flyout.Height<=Screen.FromControl(owner).WorkingArea.Height*.7,"many tasks stay within the screen height cap");
+            Check(list.VerticalScroll.Visible,"many tasks can scroll");
+            Check(list.Controls.OfType<TaskRow>().All(row=>row.Right<=list.ClientSize.Width),"cards leave room for the scrollbar");
+            list.AutoScrollPosition=new Point(0,100);flyout.RefreshData();
+            Check(list.AutoScrollPosition.Y==-100,"live updates preserve the task list scroll position");
+            owner.Data.tasks=owner.Data.tasks.Concat(new[]{new TaskItem{id="added",title="新增任务"}}).ToArray();
+            flyout.RefreshData();
+            Check(list.AutoScrollPosition.Y==-100,"adding a task preserves the task list scroll position");
+            Check(list.Controls.OfType<TaskRow>().All(row=>row.Right<=list.ClientSize.Width),"added cards leave room for the scrollbar");
+            owner.Data.tasks=owner.Data.tasks.Take(owner.Data.tasks.Length-1).ToArray();
+            flyout.RefreshData();
+            Check(list.AutoScrollPosition.Y==-100,"removing a task preserves the task list scroll position");
+            Check(list.Controls.OfType<TaskRow>().All(row=>row.Right<=list.ClientSize.Width),"remaining cards leave room for the scrollbar");
         }
         Console.WriteLine("PASS: native taskbar ownership and recovery, layout, 100% / 175% DPI, collision and popup bounds");
     }

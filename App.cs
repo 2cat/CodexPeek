@@ -59,11 +59,13 @@ static class Theme {
         using(var brush=new SolidBrush(color))using(var format=new StringFormat{LineAlignment=StringAlignment.Center,Trimming=StringTrimming.EllipsisCharacter,FormatFlags=wrap?0:StringFormatFlags.NoWrap})g.DrawString(text??"",font,brush,rect,format);
     }
     public static void Round(Form form,int radius) {
-        using(var path=new GraphicsPath()) {
-            int d=radius*2,w=form.Width,h=form.Height;
-            path.AddArc(0,0,d,d,180,90);path.AddArc(w-d,0,d,d,270,90);path.AddArc(w-d,h-d,d,d,0,90);path.AddArc(0,h-d,d,d,90,90);path.CloseFigure();
+        using(var path=Rounded(new Rectangle(0,0,form.Width,form.Height),radius)) {
             var old=form.Region;form.Region=new Region(path);if(old!=null)old.Dispose();
         }
+    }
+    public static GraphicsPath Rounded(Rectangle rect,int radius) {
+        var path=new GraphicsPath();int d=radius*2;
+        path.AddArc(rect.Left,rect.Top,d,d,180,90);path.AddArc(rect.Right-d,rect.Top,d,d,270,90);path.AddArc(rect.Right-d,rect.Bottom-d,d,d,0,90);path.AddArc(rect.Left,rect.Bottom-d,d,d,90,90);path.CloseFigure();return path;
     }
 }
 
@@ -85,11 +87,11 @@ class Peek : Form {
     readonly System.Windows.Forms.Timer timer=new System.Windows.Forms.Timer();
     readonly NotifyIcon tray=new NotifyIcon(); readonly ToolTip tip=new ToolTip();
     Process backend; Flyout flyout; DateTime lastData=DateTime.MinValue,nextStart=DateTime.MinValue,nextMeasure=DateTime.MinValue;
-    bool closing,locked,measuring,hover; Rectangle safeArea; DateTime measured=DateTime.MinValue; Icon appIcon;
+    bool closing,locked,measuring,hover,backdrop; Rectangle safeArea; DateTime measured=DateTime.MinValue; Icon appIcon;
     public Peek(bool openAtStart=false,View preview=null) {
         Preview=preview!=null;
         Text="Codex Peek";AccessibleName="Codex 状态栏";FormBorderStyle=FormBorderStyle.None;ShowInTaskbar=Review;TopMost=true;StartPosition=FormStartPosition.Manual;
-        AutoScaleMode=AutoScaleMode.None;BackColor=Theme.Bg;DoubleBuffered=true;Cursor=Cursors.Hand;Size=new Size(320,40);Opacity=Theme.Transparency?.92:1;
+        AutoScaleMode=AutoScaleMode.None;BackColor=Theme.Bg;DoubleBuffered=true;Cursor=Cursors.Hand;Size=new Size(320,40);
         appIcon=MakeIcon();Icon=appIcon;tray.Icon=appIcon;tray.Text="Codex Peek";tray.Visible=true;
         var menu=new ContextMenuStrip();menu.Items.Add("查看本机任务",null,(s,e)=>Toggle());menu.Items.Add("打开 Codex",null,(s,e)=>OpenTask(null));menu.Items.Add(new ToolStripSeparator());menu.Items.Add("退出 Codex Peek",null,(s,e)=>Close());
         menu.ShowImageMargin=false;menu.ForeColor=Theme.Text;menu.Renderer=new ToolStripProfessionalRenderer(new MenuColors());
@@ -100,8 +102,12 @@ class Peek : Form {
         timer.Interval=750;timer.Tick+=(s,e)=>Tick();Shown+=(s,e)=>{Hide();if(Preview)Apply(preview);else StartBackend();Tick();timer.Start();if(openAtStart)BeginInvoke((Action)(()=>Toggle()));};
     }
     protected override bool ShowWithoutActivation {get{return true;}}
-    protected override CreateParams CreateParams {get{var cp=base.CreateParams;cp.Style|=unchecked((int)0x80000000);cp.ExStyle|=0x08000000;if(!Review)cp.ExStyle|=0x80;return cp;}}
-    protected override void WndProc(ref Message m) {if(m.Msg==0x21){m.Result=new IntPtr(3);return;}base.WndProc(ref m);}
+    protected override CreateParams CreateParams {get{var cp=base.CreateParams;cp.Style|=unchecked((int)0x80000000)|0x00C40000;cp.ExStyle|=0x08000000;if(!Review)cp.ExStyle|=0x80;return cp;}}
+    protected override void WndProc(ref Message m) {if(m.Msg==0x21){m.Result=new IntPtr(3);return;}if(m.Msg==0x83&&m.WParam!=IntPtr.Zero){m.Result=IntPtr.Zero;return;}if(m.Msg==0x84){m.Result=new IntPtr(1);return;}base.WndProc(ref m);}
+    protected override void OnHandleCreated(EventArgs e) {
+        base.OnHandleCreated(e);backdrop=Native.PopupChrome(Handle,Theme.Transparency);if(backdrop)BackColor=Color.Black;
+        Native.SetWindowPos(Handle,IntPtr.Zero,0,0,0,0,0x37);
+    }
     static Icon MakeIcon() {
         using(var bitmap=new Bitmap(32,32)) using(var g=Graphics.FromImage(bitmap)) {
             g.SmoothingMode=SmoothingMode.AntiAlias;g.Clear(Color.Transparent);
@@ -142,7 +148,7 @@ class Peek : Form {
         DpiScale=Native.GetDpiForWindow(bar)/96f;
         if(DpiScale<=0)DpiScale=1;
         if(hidden || safeArea.IsEmpty || (DateTime.UtcNow-measured).TotalSeconds>12){Hide();if(hidden&&flyout!=null)flyout.Hide();return;}
-        if(Bounds!=safeArea){Bounds=safeArea;Theme.Round(this,S(7));}
+        if(Bounds!=safeArea){Bounds=safeArea;if(!backdrop)Theme.Round(this,S(8));}
         if(!Visible)Show();Native.AboveTaskbar(Handle,bar);
         if(flyout!=null&&flyout.Visible)flyout.Invalidate(true);
     }
@@ -162,11 +168,12 @@ class Peek : Form {
         if(!closing)try{BeginInvoke((Action)(()=>{safeArea=place;measured=DateTime.UtcNow;measuring=false;}));}catch{}
     }
     protected override void OnPaint(PaintEventArgs e) {
-        e.Graphics.Clear(hover?Color.FromArgb(42,45,51):Theme.Bg);
+        e.Graphics.Clear(backdrop?Color.FromArgb(hover?180:155,Theme.Bg):hover?Color.FromArgb(42,45,51):Theme.Bg);
         e.Graphics.SmoothingMode=SmoothingMode.AntiAlias;
-        using(var brush=new SolidBrush(Theme.Accent(Data.tone)))e.Graphics.FillEllipse(brush,S(10),S(11),S(4),S(4));
-        using(var font=Theme.Font(S(12)))Theme.TextAt(e.Graphics,Data.headline,font,Theme.Text,new Rectangle(S(19),S(3),Width-S(29),S(20)));
-        using(var font=Theme.Font(S(10)))Theme.TextAt(e.Graphics,Data.quotaText,font,Theme.Muted,new Rectangle(S(19),S(22),Width-S(29),S(14)));
+        using(var path=Theme.Rounded(new Rectangle(1,1,Width-3,Height-3),S(8)))using(var pen=new Pen(Color.FromArgb(hover?38:22,Color.White)))e.Graphics.DrawPath(pen,path);
+        using(var brush=new SolidBrush(Theme.Accent(Data.tone)))e.Graphics.FillEllipse(brush,S(11),S(10),S(4),S(4));
+        using(var font=Theme.Font(S(13)))Theme.TextAt(e.Graphics,Data.headline,font,Theme.Text,new Rectangle(S(20),S(2),Width-S(31),S(21)));
+        using(var font=Theme.Font(S(11)))Theme.TextAt(e.Graphics,Data.quotaText,font,Theme.Muted,new Rectangle(S(20),S(22),Width-S(31),S(16)));
     }
     public void Toggle() {
         if(flyout==null||flyout.IsDisposed)flyout=new Flyout(this);
@@ -192,7 +199,7 @@ class Flyout : Form {
     readonly Peek owner;readonly Panel list=new Panel();readonly Button open=new Button();readonly Label empty=new Label(),hint=new Label();
     string ids="";bool layingOut,backdrop;Font footerFont,emptyFont,hintFont;
     // Limit background brightness so secondary text remains readable over Acrylic.
-    public Color Surface {get{return backdrop?Color.FromArgb(220,Theme.Bg):Theme.Bg;}}
+    public Color Surface {get{return backdrop?Color.FromArgb(195,Theme.Bg):Theme.Bg;}}
     int S(float v){return owner.S(v);}
     public Flyout(Peek parent) {
         owner=parent;Text="Codex 本机任务";AccessibleName=Text;AutoScaleMode=AutoScaleMode.None;FormBorderStyle=FormBorderStyle.None;ShowInTaskbar=Peek.Review;StartPosition=FormStartPosition.Manual;TopMost=true;BackColor=Theme.Bg;DoubleBuffered=true;KeyPreview=true;
@@ -216,35 +223,37 @@ class Flyout : Form {
         if(layingOut)return;layingOut=true;
         try {
             View data=owner.Data;AccessibleName="Codex 本机任务，"+data.running+" 项运行，"+data.waiting+" 项待处理";Rectangle work=Screen.FromControl(owner).WorkingArea;
-            int height=S(data.tasks.Length==0?160:126+data.tasks.Length*104);height=Math.Min(height,(int)(work.Height*.7));
-            Rectangle anchor=owner.Visible?owner.Bounds:new Rectangle(Cursor.Position,new Size(1,1));
-            Bounds=Placement.Popup(anchor,work,S(420),height,S(8));
             Point scroll=list.AutoScrollPosition;
-            int top=data.tasks.Length==0?48:68;
-            int listHeight=Height-S(top+46);if(data.tasks.Length>0)listHeight=Math.Min(listHeight,data.tasks.Length*S(104));
+            int height=S(data.tasks.Length==0?184:128+data.tasks.Length*132);height=Math.Min(height,(int)(work.Height*.7));
+            Rectangle anchor=owner.Visible?owner.Bounds:new Rectangle(Cursor.Position,new Size(1,1));
+            Bounds=Placement.Popup(anchor,work,S(460),height,S(8));
+            int top=data.tasks.Length==0?58:82;
+            int contentHeight=Math.Max(0,data.tasks.Length*S(132)-S(8));
+            int listHeight=Height-S(top+54);if(data.tasks.Length>0)listHeight=Math.Min(listHeight,contentHeight);
             list.Bounds=new Rectangle(S(16),S(top),Width-S(32),listHeight);
-            open.Bounds=new Rectangle(Width-S(126),Height-S(38),S(112),S(26));
-            if(footerFont==null||footerFont.Size!=S(11)){var old=footerFont;footerFont=Theme.Font(S(11));open.Font=footerFont;if(old!=null)old.Dispose();}
+            list.AutoScrollMinSize=new Size(0,contentHeight);
+            open.Bounds=new Rectangle(Width-S(142),Height-S(42),S(126),S(30));
+            if(footerFont==null||footerFont.Size!=S(12)){var old=footerFont;footerFont=Theme.Font(S(12));open.Font=footerFont;if(old!=null)old.Dispose();}
             string next=String.Join("|",data.tasks.Select(t=>t.id));
             if(ids!=next){foreach(var row in list.Controls.OfType<TaskRow>().ToArray()){list.Controls.Remove(row);row.Dispose();}ids=next;foreach(var task in data.tasks){var row=new TaskRow(owner);row.Item=task;row.Click+=(s,e)=>owner.OpenTask(((TaskRow)s).Item.id);list.Controls.Add(row);}}
+            list.AutoScrollPosition=new Point(0,-scroll.Y);scroll=list.AutoScrollPosition;
             int y=0,index=0;
-            foreach(var row in list.Controls.OfType<TaskRow>()){row.Item=data.tasks[index++];row.Bounds=new Rectangle(0,y+scroll.Y,list.ClientSize.Width,S(104));row.AccessibleName=row.Item.title+"，"+row.Item.detail;row.AccessibleDescription=row.Item.progress;row.Invalidate();y+=S(104);}
-            list.AutoScrollMinSize=new Size(0,y);
-            empty.Visible=hint.Visible=data.tasks.Length==0;empty.Bounds=new Rectangle(0,S(8),list.ClientSize.Width,S(24));empty.Text=data.connected?"暂无运行任务":"状态未同步";
-            hint.Bounds=new Rectangle(0,S(34),list.ClientSize.Width,S(22));hint.Text=data.connected?"开始新任务后，执行详情会显示在这里":data.diagnostic;
-            if(emptyFont==null||emptyFont.Size!=S(12)){var old=emptyFont;emptyFont=Theme.Font(S(12));empty.Font=emptyFont;if(old!=null)old.Dispose();}
-            if(hintFont==null||hintFont.Size!=S(10)){var old=hintFont;hintFont=Theme.Font(S(10));hint.Font=hintFont;if(old!=null)old.Dispose();}
+            foreach(var row in list.Controls.OfType<TaskRow>()){row.Item=data.tasks[index++];row.Bounds=new Rectangle(0,y+scroll.Y,list.ClientSize.Width,S(124));row.AccessibleName=row.Item.title+"，"+row.Item.detail;row.AccessibleDescription=row.Item.progress;row.Invalidate();y+=S(132);}
+            empty.Visible=hint.Visible=data.tasks.Length==0;empty.Bounds=new Rectangle(0,S(8),list.ClientSize.Width,S(28));empty.Text=data.connected?"暂无运行任务":"状态未同步";
+            hint.Bounds=new Rectangle(0,S(39),list.ClientSize.Width,S(25));hint.Text=data.connected?"开始新任务后，执行详情会显示在这里":data.diagnostic;
+            if(emptyFont==null||emptyFont.Size!=S(14)){var old=emptyFont;emptyFont=Theme.Font(S(14));empty.Font=emptyFont;if(old!=null)old.Dispose();}
+            if(hintFont==null||hintFont.Size!=S(12)){var old=hintFont;hintFont=Theme.Font(S(12));hint.Font=hintFont;if(old!=null)old.Dispose();}
             Invalidate();
         }finally{layingOut=false;}
     }
     protected override void OnPaint(PaintEventArgs e) {
         var g=e.Graphics;g.Clear(Surface);View d=owner.Data;
-        using(var font=Theme.Font(S(14),true))Theme.TextAt(g,"Codex",font,Theme.Text,new Rectangle(S(20),S(13),S(65),S(25)));
-        using(var font=Theme.Font(S(11)))Theme.TextAt(g,"本机任务",font,Theme.Muted,new Rectangle(S(84),S(14),S(100),S(25)));
-        if(d.tasks.Length>0)using(var font=Theme.Font(S(10)))Theme.TextAt(g,d.running+" 项运行   ·   "+d.waiting+" 项待处理",font,Theme.Muted,new Rectangle(S(20),S(41),Width-S(40),S(20)));
-        using(var pen=new Pen(Theme.Line)){g.DrawLine(pen,S(20),Height-S(46),Width-S(20),Height-S(46));}
+        using(var font=Theme.Font(S(16),true))Theme.TextAt(g,"Codex",font,Theme.Text,new Rectangle(S(22),S(15),S(70),S(29)));
+        using(var font=Theme.Font(S(13)))Theme.TextAt(g,"本机任务",font,Theme.Muted,new Rectangle(S(96),S(16),S(108),S(28)));
+        if(d.tasks.Length>0)using(var font=Theme.Font(S(12)))Theme.TextAt(g,d.running+" 项运行   ·   "+d.waiting+" 项待处理",font,Theme.Muted,new Rectangle(S(22),S(48),Width-S(44),S(23)));
+        using(var pen=new Pen(Color.FromArgb(35,Color.White))){g.DrawLine(pen,S(22),Height-S(54),Width-S(22),Height-S(54));}
         string sync=owner.Preview?"界面预览 · 演示数据":d.connected?"已连接":"状态未同步";
-        using(var font=Theme.Font(S(10)))Theme.TextAt(g,sync,font,Theme.Muted,new Rectangle(S(21),Height-S(36),Width-S(160),S(23)));
+        using(var font=Theme.Font(S(12)))Theme.TextAt(g,sync,font,Theme.Muted,new Rectangle(S(22),Height-S(41),Width-S(176),S(28)));
     }
 }
 
@@ -253,19 +262,21 @@ class TaskRow : Button {
     int S(float v){return owner.S(v);}
     public TaskRow(Peek parent){owner=parent;SetStyle(ControlStyles.UserPaint|ControlStyles.AllPaintingInWmPaint|ControlStyles.OptimizedDoubleBuffer,true);Cursor=Cursors.Hand;FlatStyle=FlatStyle.Flat;TabStop=true;MouseEnter+=(s,e)=>{hover=true;Invalidate();};MouseLeave+=(s,e)=>{hover=false;Invalidate();};}
     protected override void OnPaint(PaintEventArgs e) {
-        if(Item==null)return;var g=e.Graphics;g.Clear(hover||Focused?Color.FromArgb(45,45,49):((Flyout)FindForm()).Surface);
+        if(Item==null)return;var g=e.Graphics;g.Clear(((Flyout)FindForm()).Surface);g.SmoothingMode=SmoothingMode.AntiAlias;
+        using(var path=Theme.Rounded(new Rectangle(1,1,Width-3,Height-3),S(8))) {
+            using(var brush=new SolidBrush(Color.FromArgb(hover||Focused?24:10,Color.White)))g.FillPath(brush,path);
+            using(var pen=new Pen(Focused&&ShowFocusCues?Theme.Accent("blue"):Color.FromArgb(hover?42:24,Color.White),Focused&&ShowFocusCues?S(1):1))g.DrawPath(pen,path);
+        }
         string tone=Item.state=="approval"||Item.state=="input"?"amber":Item.state=="failed"?"red":"blue";
         string label=Item.state=="approval"?"等待确认":Item.state=="input"?"等待回复":Item.state=="failed"?"异常":"运行中";
-        using(var font=Theme.Font(S(12),true))Theme.TextAt(g,Item.title,font,Theme.Text,new Rectangle(S(6),S(5),Width-S(92),S(23)));
-        using(var font=Theme.Font(S(10)))Theme.TextAt(g,label,font,Theme.Accent(tone),new Rectangle(Width-S(72),S(6),S(68),S(22)));
-        using(var font=Theme.Font(S(11)))Theme.TextAt(g,Item.detail,font,Theme.Text,new Rectangle(S(6),S(30),Width-S(12),S(23)));
-        using(var font=Theme.Font(S(10)))Theme.TextAt(g,String.IsNullOrWhiteSpace(Item.progress)?"点击打开原任务，查看执行记录":Item.progress,font,Theme.Muted,new Rectangle(S(6),S(54),Width-S(12),S(21)));
+        using(var font=Theme.Font(S(14),true))Theme.TextAt(g,Item.title,font,Theme.Text,new Rectangle(S(13),S(8),Width-S(112),S(26)));
+        using(var font=Theme.Font(S(12)))Theme.TextAt(g,label,font,Theme.Accent(tone),new Rectangle(Width-S(90),S(9),S(78),S(25)));
+        using(var font=Theme.Font(S(13)))Theme.TextAt(g,Item.detail,font,Theme.Text,new Rectangle(S(13),S(38),Width-S(26),S(26)));
+        using(var font=Theme.Font(S(12)))Theme.TextAt(g,String.IsNullOrWhiteSpace(Item.progress)?"点击打开原任务，查看执行记录":Item.progress,font,Theme.Muted,new Rectangle(S(13),S(67),Width-S(26),S(24)));
         double? since=Item.waitingSince??Item.startedAt;
         string elapsed="";if(since.HasValue){var t=DateTime.UtcNow-Peek.Epoch(since.Value);if(t.TotalSeconds<0)t=TimeSpan.Zero;elapsed=(Item.waitingSince.HasValue?"已等待 ":"本轮已用 ")+(t.TotalHours>=1?((int)t.TotalHours)+"小时 ":"")+t.Minutes.ToString("00")+":"+t.Seconds.ToString("00");}
-        using(var font=Theme.Font(S(9)))Theme.TextAt(g,elapsed,font,Theme.Muted,new Rectangle(S(6),S(78),Width-S(85),S(19)));
-        using(var font=Theme.Font(S(10)))Theme.TextAt(g,tone=="amber"?"去处理  ↗":"打开  ↗",font,Theme.Accent(tone),new Rectangle(Width-S(73),S(77),S(68),S(20)));
-        using(var pen=new Pen(Theme.Line))g.DrawLine(pen,S(6),Height-1,Width-S(6),Height-1);
-        if(Focused&&ShowFocusCues)ControlPaint.DrawFocusRectangle(g,new Rectangle(1,1,Width-3,Height-3));
+        using(var font=Theme.Font(S(11)))Theme.TextAt(g,elapsed,font,Theme.Muted,new Rectangle(S(13),S(96),Width-S(110),S(21)));
+        using(var font=Theme.Font(S(12)))Theme.TextAt(g,tone=="amber"?"去处理  ↗":"打开  ↗",font,Theme.Accent(tone),new Rectangle(Width-S(92),S(94),S(80),S(24)));
     }
 }
 
