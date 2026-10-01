@@ -25,23 +25,31 @@ class LayoutTests {
             fixture.Start();
             try {
                 IntPtr bar=new IntPtr(Int64.Parse(fixture.StandardOutput.ReadLine()));
-                widget.Bounds=Native.Rect(bar);widget.Show();Application.DoEvents();
-                Native.AboveTaskbar(widget.Handle,bar);
-                Native.SetWindowPos(bar,new IntPtr(-1),0,0,0,0,0x13);
-                Application.DoEvents();
-                var point=new POINT{X=widget.Left+20,Y=widget.Top+20};
-                Check(GetAncestor(WindowFromPoint(point),2)==widget.Handle,"raising the taskbar never covers its entry");
-                fixture.StandardInput.WriteLine("close");fixture.StandardInput.Flush();
-                Check(fixture.WaitForExit(5000),"owner fixture exits");Application.DoEvents();
-                Check(!widget.IsDisposed && widget.Visible,"entry survives loss of its external taskbar owner");
-                using(var replacement=new PassiveForm()) {
-                    replacement.Bounds=widget.Bounds;replacement.Show();
-                    Native.AboveTaskbar(widget.Handle,replacement.Handle);
-                    Native.SetWindowPos(replacement.Handle,new IntPtr(-1),0,0,0,0,0x13);
-                    Application.DoEvents();
-                    Check(GetAncestor(WindowFromPoint(point),2)==widget.Handle,"entry reattaches to the replacement taskbar");
-                    Native.AboveTaskbar(widget.Handle,IntPtr.Zero);
-                }
+                widget.Bounds=Native.Rect(bar);Exception failure=null;
+                widget.Shown+=(s,e)=>widget.BeginInvoke((Action)(()=>{
+                    try {
+                        Native.AboveTaskbar(widget.Handle,bar);
+                        Native.SetWindowPos(bar,new IntPtr(-1),0,0,0,0,0x13);
+                        Application.DoEvents();
+                        var point=new POINT{X=widget.Left+20,Y=widget.Top+20};
+                        IntPtr hit=GetAncestor(WindowFromPoint(point),2);
+                        Check(hit==widget.Handle,"raising the taskbar never covers its entry; hit="+hit+" widget="+widget.Handle+" owner="+Native.GetWindow(widget.Handle,4)+" bar="+bar+" bounds="+widget.Bounds+" barBounds="+Native.Rect(bar));
+                        fixture.StandardInput.WriteLine("close");fixture.StandardInput.Flush();
+                        Check(fixture.WaitForExit(5000),"owner fixture exits");Application.DoEvents();
+                        Check(!widget.IsDisposed && widget.Visible,"entry survives loss of its external taskbar owner");
+                        using(var replacement=new PassiveForm()) {
+                            replacement.Bounds=widget.Bounds;replacement.Show();
+                            Native.AboveTaskbar(widget.Handle,replacement.Handle);
+                            Native.SetWindowPos(replacement.Handle,new IntPtr(-1),0,0,0,0,0x13);
+                            Application.DoEvents();
+                            Check(GetAncestor(WindowFromPoint(point),2)==widget.Handle,"entry reattaches to the replacement taskbar");
+                            Native.AboveTaskbar(widget.Handle,IntPtr.Zero);
+                        }
+                    }catch(Exception ex){failure=ex;}
+                    finally{widget.Close();}
+                }));
+                Application.Run(widget);
+                if(failure!=null)throw failure;
             }finally {if(!fixture.HasExited){fixture.Kill();fixture.WaitForExit();}}
         }
     }
@@ -57,7 +65,6 @@ class LayoutTests {
             }
             return;
         }
-        DockingCheck();
         Rectangle bar = new Rectangle(0,1516,2560,84);
         Rectangle rect = Placement.Widget(bar, 168, 840);
         Check(rect.Width==560 && rect.Height==70, "wider widget at 175% DPI");
@@ -66,6 +73,13 @@ class LayoutTests {
         Check(Placement.Widget(bar,168,200).IsEmpty,"insufficient space uses tray");
         Check(Placement.Widget(new Rectangle(0,1032,1920,48),96,600).Size==new Size(320,40),"100% DPI dimensions");
         Check(Placement.Widget(bar,168,500).Right==486,"shrinks before the first taskbar button");
+        Check(Placement.Widget(bar,168,null,rect,true)==new Rectangle(14,1523,560,70),"opening Start with unavailable taskbar buttons preserves the last measured area");
+        Check(Placement.Widget(bar,168,null,Rectangle.Empty,true).IsEmpty,"unavailable buttons at startup do not invent space");
+        Check(Placement.Widget(bar,168,null,rect,false).IsEmpty,"a changed taskbar handle, bounds or DPI invalidates the old area");
+        Rectangle occupied=Placement.Widget(bar,168,200,rect,true);
+        Check(occupied.IsEmpty && Placement.Widget(bar,168,null,occupied,true).IsEmpty,"known insufficient space stays cleared through an unavailable read");
+        Check(Placement.Widget(bar,168,500,rect,true)==new Rectangle(14,1523,472,70),"recovered button data replaces the previous placement");
+        DockingCheck();
         Rectangle popup=Placement.Popup(new Rectangle(2500,1516,60,70),new Rectangle(0,0,2560,1516),735,800,14);
         Check(popup.Right<=2560 && popup.Bottom<=1516 && popup.Left>=0,"flyout stays on screen");
         using(var owner=new Peek()) using(var flyout=new Flyout(owner)) {

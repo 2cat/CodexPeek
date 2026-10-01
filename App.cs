@@ -87,7 +87,7 @@ class Peek : Form {
     readonly System.Windows.Forms.Timer timer=new System.Windows.Forms.Timer();
     readonly NotifyIcon tray=new NotifyIcon(); readonly ToolTip tip=new ToolTip();
     Process backend; Flyout flyout; DateTime lastData=DateTime.MinValue,nextStart=DateTime.MinValue,nextMeasure=DateTime.MinValue;
-    bool closing,locked,measuring,hover,backdrop; Rectangle safeArea; DateTime measured=DateTime.MinValue; Icon appIcon;
+    bool closing,locked,measuring,hover,backdrop; Rectangle safeArea,measuredBounds; IntPtr measuredTaskbar; int measuredDpi; DateTime measured=DateTime.MinValue; Icon appIcon;
     public Peek(bool openAtStart=false,View preview=null) {
         Preview=preview!=null;
         Text="Codex Peek";AccessibleName="Codex 状态栏";FormBorderStyle=FormBorderStyle.None;ShowInTaskbar=Review;TopMost=true;StartPosition=FormStartPosition.Manual;
@@ -142,30 +142,29 @@ class Peek : Form {
         if((backend==null||backend.HasExited)&&DateTime.UtcNow>=nextStart)StartBackend();
         if(DateTime.UtcNow>=nextMeasure&&!measuring){measuring=true;nextMeasure=DateTime.UtcNow.AddSeconds(4);ThreadPool.QueueUserWorkItem(s=>Measure());}
         IntPtr bar=Native.FindWindow("Shell_TrayWnd",null);
-        Rectangle rect=Native.Rect(bar);Rectangle screen=Screen.FromHandle(bar).Bounds;
+        Rectangle rect=Native.Rect(bar);Rectangle screen=Screen.FromHandle(bar).Bounds;int dpi=(int)Native.GetDpiForWindow(bar);
         bool hidden=locked||bar==IntPtr.Zero||!Native.IsWindowVisible(bar)||rect.Top>=screen.Bottom-4||rect.Bottom>screen.Bottom+4||rect.Width<rect.Height||Native.Fullscreen(Handle,flyout==null?IntPtr.Zero:flyout.Handle,screen);
-        if(Environment.GetCommandLineArgs().Contains("--diagnostics"))try{File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"diagnostics.json"),new JavaScriptSerializer().Serialize(new{hidden=hidden,place=safeArea.ToString(),bar=rect.ToString(),age=(DateTime.UtcNow-measured).TotalSeconds,measuring=measuring,visible=Visible,dpi=Native.GetDpiForWindow(bar),headline=Data.headline,handle=Handle.ToInt64(),owner=Native.GetWindow(Handle,4).ToInt64(),barHandle=bar.ToInt64()}));}catch{}
-        DpiScale=Native.GetDpiForWindow(bar)/96f;
+        if(Environment.GetCommandLineArgs().Contains("--diagnostics"))try{File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"diagnostics.json"),new JavaScriptSerializer().Serialize(new{hidden=hidden,place=safeArea.ToString(),bar=rect.ToString(),age=(DateTime.UtcNow-measured).TotalSeconds,measuring=measuring,visible=Visible,dpi=dpi,headline=Data.headline,handle=Handle.ToInt64(),owner=Native.GetWindow(Handle,4).ToInt64(),barHandle=bar.ToInt64()}));}catch{}
+        DpiScale=dpi/96f;
         if(DpiScale<=0)DpiScale=1;
-        if(hidden || safeArea.IsEmpty || (DateTime.UtcNow-measured).TotalSeconds>12){Hide();if(hidden&&flyout!=null)flyout.Hide();return;}
+        if(hidden || safeArea.IsEmpty || bar!=measuredTaskbar || rect!=measuredBounds || dpi!=measuredDpi || (DateTime.UtcNow-measured).TotalSeconds>12){Hide();if(hidden&&flyout!=null)flyout.Hide();return;}
         if(Bounds!=safeArea){Bounds=safeArea;if(!backdrop)Theme.Round(this,S(8));}
         if(!Visible)Show();Native.AboveTaskbar(Handle,bar);
         if(flyout!=null&&flyout.Visible)flyout.Invalidate(true);
     }
     void Measure() {
-        Rectangle place=Rectangle.Empty;
+        IntPtr bar=Native.FindWindow("Shell_TrayWnd",null);Rectangle rect=Native.Rect(bar);int dpi=(int)Native.GetDpiForWindow(bar);int? first=null;
         try {
-            IntPtr bar=Native.FindWindow("Shell_TrayWnd",null);Rectangle rect=Native.Rect(bar);
             if(bar!=IntPtr.Zero){
                 var root=AutomationElement.FromHandle(bar);
                 var buttons=root.FindAll(TreeScope.Descendants,new OrCondition(new PropertyCondition(AutomationElement.ControlTypeProperty,ControlType.Button),new PropertyCondition(AutomationElement.ControlTypeProperty,ControlType.CheckBox),new PropertyCondition(AutomationElement.ControlTypeProperty,ControlType.ListItem)));
-                int first=rect.Right;
-                foreach(AutomationElement button in buttons){var r=button.Current.BoundingRectangle;if(!button.Current.IsOffscreen&&r.Width>0&&r.Height>0&&r.Right>rect.Left&&r.Top<rect.Bottom&&r.Bottom>rect.Top)first=Math.Min(first,(int)r.Left);}
-                // ponytail: primary taskbar only; unknown occupancy falls back to tray instead of guessing.
-                if(buttons.Count>0)place=Placement.Widget(rect,(int)Native.GetDpiForWindow(bar),first);
+                foreach(AutomationElement button in buttons){var r=button.Current.BoundingRectangle;if(!button.Current.IsOffscreen&&r.Width>0&&r.Height>0&&r.Right>rect.Left&&r.Left<rect.Right&&r.Top<rect.Bottom&&r.Bottom>rect.Top)first=Math.Min(first??rect.Right,(int)r.Left);}
             }
-        }catch{}
-        if(!closing)try{BeginInvoke((Action)(()=>{safeArea=place;measured=DateTime.UtcNow;measuring=false;}));}catch{}
+        }catch{first=null;}
+        if(!closing)try{BeginInvoke((Action)(()=>{
+            safeArea=Placement.Widget(rect,dpi,first,safeArea,bar==measuredTaskbar&&rect==measuredBounds&&dpi==measuredDpi);
+            measuredTaskbar=bar;measuredBounds=rect;measuredDpi=dpi;measured=DateTime.UtcNow;measuring=false;
+        }));}catch{}
     }
     protected override void OnPaint(PaintEventArgs e) {
         e.Graphics.Clear(backdrop?Color.FromArgb(hover?100:70,Theme.Bg):hover?Color.FromArgb(42,45,51):Theme.Bg);
@@ -328,6 +327,10 @@ static class Native {
 }
 
 static class Placement {
+    public static Rectangle Widget(Rectangle bar, int dpi, int? firstButton, Rectangle previous, bool sameTaskbar) {
+        // ponytail: reuse occupancy only on the unchanged primary taskbar; fresh collisions or context changes clear it.
+        return firstButton.HasValue ? Widget(bar,dpi,firstButton.Value) : sameTaskbar ? previous : Rectangle.Empty;
+    }
     public static Rectangle Widget(Rectangle bar, int dpi, int firstButton) {
         double scale=dpi/96.0;
         int margin=(int)Math.Round(8*scale),height=(int)Math.Round(40*scale);
