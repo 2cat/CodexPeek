@@ -24,10 +24,13 @@ class LayoutTests {
             fixture.StartInfo=new ProcessStartInfo(Application.ExecutablePath,"--owner-fixture"){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardInput=true};
             fixture.Start();
             try {
-                IntPtr bar=new IntPtr(Int64.Parse(fixture.StandardOutput.ReadLine()));
-                widget.Bounds=Native.Rect(bar);Exception failure=null;
+                var work=Screen.PrimaryScreen.WorkingArea;
+                widget.Bounds=new Rectangle(work.Right-340,work.Top+10,320,40);
+                Exception failure=null;
                 widget.Shown+=(s,e)=>widget.BeginInvoke((Action)(()=>{
                     try {
+                        IntPtr bar=new IntPtr(Int64.Parse(fixture.StandardOutput.ReadLine()));
+                        widget.Bounds=Native.Rect(bar);Application.DoEvents();
                         Native.AboveTaskbar(widget.Handle,bar);
                         Native.SetWindowPos(bar,new IntPtr(-1),0,0,0,0,0x13);
                         Application.DoEvents();
