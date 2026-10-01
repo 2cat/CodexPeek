@@ -177,7 +177,7 @@ class Peek : Form {
     public void Toggle() {
         if(flyout==null||flyout.IsDisposed)flyout=new Flyout(this);
         if(flyout.Visible){flyout.Hide();return;}
-        tip.Hide(this);tip.Active=false;flyout.RefreshData();flyout.Show();flyout.Activate();Native.SetForegroundWindow(flyout.Handle);
+        tip.Hide(this);tip.Active=false;flyout.RefreshData();flyout.Show();
     }
     public void RestoreTooltip(){tip.Active=true;}
     public void OpenTask(string id) {
@@ -305,7 +305,6 @@ static class Native {
     [DllImport("user32.dll")]public static extern uint GetDpiForWindow(IntPtr h);
     [DllImport("user32.dll")]public static extern bool SetProcessDpiAwarenessContext(IntPtr context);
     [DllImport("user32.dll")]public static extern bool SetWindowPos(IntPtr h,IntPtr after,int x,int y,int w,int height,uint flags);
-    [DllImport("user32.dll")]public static extern bool SetForegroundWindow(IntPtr h);
     [DllImport("user32.dll")]public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll",CharSet=CharSet.Unicode)]static extern int GetClassName(IntPtr h,StringBuilder name,int count);
     [DllImport("user32.dll")]public static extern bool DestroyIcon(IntPtr h);

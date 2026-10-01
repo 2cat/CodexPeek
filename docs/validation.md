@@ -2,6 +2,18 @@
 
 记录日期：2026-10-01。以下是开发机的观测记录，不代表任意 Windows 机器上的保证。
 
+## 打开任务面板后背景明暗跳动
+
+固定任务内容和静态底图后，面板空白区域在打开 400 毫秒后仍周期性变化，亮度范围为 55～67，同时收到交替的 `WM_NCACTIVATE`。停止定时重绘后仍复现，排除了单纯重绘导致颜色叠加的解释。
+
+打开路径在 `Show()` 后又调用 `Activate()` 和 `SetForegroundWindow()`，后者实测返回 false。Windows 对未获准的前台请求触发提示闪烁，DWM 随窗口激活外观改变玻璃背景。独立单因素对照中，移除两次额外激活后亮度稳定为 67；保留原调用、仅停止提示闪烁也得到 67。正式修复只删除额外请求和未使用的 P/Invoke，保留正常 `Show()`、刷新、Escape 和失焦关闭逻辑。参见 [Form.Activate](https://learn.microsoft.com/en-us/dotnet/api/system.windows.forms.form.activate?view=netframework-4.8.1) 和 [SetForegroundWindow](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setforegroundwindow)。
+
+新增原生检查通过公开的 `Peek.Toggle()` 打开面板，确认采样点命中面板，在固定背景及连续刷新下检查稳定后的像素，再通过同一入口收起。检查需要解锁且无人操作的桌面，手动运行 `build/LayoutTests.exe --popup-paint`，不列入默认 CI 的像素验收。
+
+16 项数据测试通过。修复前的公开入口回归产物 `DE81F318AF21BAF9253D35FFF73361831C37DE6676C393B4181A09A0D07FF7EC`、修复后的完整原生产物 `C9AF1D231BBC090D2B8A6C35B7D0D803DE7D8FBA54F7F8CC45E3D5FCAD6E841C` 均被本机应用控制阻止，不能记录为本机公开入口回归通过。上述颜色对照来自获准运行的独立诊断窗口。
+
+正式修复应用已编译，SHA-256 为 `5EB3A17F6BF18AFA24CD26C2F97CCD3497687578E87D06C1C5E5E14A0427C968`。自动部署后从项目根目录正常启动被应用控制阻止，已恢复根目录与 dist 的 B69 可用产物并以日常参数重新启动；当前没有让修复版生效。没有调整系统安全设置或绕过拦截，修复版的实际点击和键盘焦点验收仍待完成。
+
 ## 开始菜单导致入口消失
 
 修复前在实际桌面连续两次打开开始菜单，捕获到 UI Automation 暂时不返回任务栏按钮，程序把未知读取当成没有空位，将 `safeArea` 清空并调用 `Hide()`。此时任务栏仍可见，前台 `SearchHost` 的边界为 `(580,203)-(1980,1516)`，没有触发全屏隐藏；下一次成功测量才恢复入口。

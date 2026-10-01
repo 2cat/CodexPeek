@@ -57,9 +57,46 @@ class LayoutTests {
         }
     }
     static void Check(bool value, string message) { if (!value) { Console.Error.WriteLine("FAIL: "+message); throw new Exception(message); } }
+    // Run on an unlocked, idle desktop: this checks the composed Acrylic pixels.
+    static void PopupPaintCheck() {
+        using(var background=new Form())using(var owner=new Peek())using(var timer=new System.Windows.Forms.Timer()) {
+            background.FormBorderStyle=FormBorderStyle.None;background.StartPosition=FormStartPosition.Manual;
+            background.Bounds=new Rectangle(40,60,920,680);background.BackColor=Color.FromArgb(90,120,150);
+            owner.Preview=true;owner.DpiScale=1.75f;owner.Data=View.Offline();owner.Data.connected=true;
+            owner.Data.tasks=new[]{new TaskItem{id="paint",title="固定演示任务",state="running",detail="检查面板背景"}};
+            Flyout popup=null;Exception failure=null;var watch=new Stopwatch();int min=255,max=0;
+            background.Shown+=(s,e)=>background.BeginInvoke((Action)(()=>{
+                try {
+                    owner.Toggle();popup=Application.OpenForms.OfType<Flyout>().Single();
+                    popup.Location=new Point(80,100);watch.Start();timer.Start();
+                }catch(Exception ex){failure=ex;owner.Close();background.Close();}
+            }));
+            timer.Interval=50;timer.Tick+=(s,e)=>{
+                try {
+                    var point=new POINT{X=popup.Right-50,Y=popup.Top+30};
+                    Check(popup.Visible&&GetAncestor(WindowFromPoint(point),2)==popup.Handle,"popup remains visible over the fixed backdrop");
+                    if(watch.ElapsedMilliseconds>400)using(var pixel=new Bitmap(1,1))using(var g=Graphics.FromImage(pixel)) {
+                        g.CopyFromScreen(point.X,point.Y,0,0,new Size(1,1));int level=pixel.GetPixel(0,0).R;
+                        min=Math.Min(min,level);max=Math.Max(max,level);
+                    }
+                    popup.Invalidate(true);
+                    if(watch.ElapsedMilliseconds<3500)return;
+                    Check(max-min<=3,"idle popup background is stable after opening; range="+min+".."+max);
+                    owner.Toggle();Check(!popup.Visible,"clicking the entry again closes the popup");
+                }catch(Exception ex){failure=ex;}
+                timer.Stop();owner.Close();background.Close();
+            };
+            Application.Run(background);if(failure!=null)throw failure;
+            Console.WriteLine("PASS: public task-list toggle, stable composed background and close; range="+min+".."+max);
+        }
+    }
     [STAThread]
     static void Main(string[] args) {
         Native.SetProcessDpiAwarenessContext(new IntPtr(-4));
+        if(Array.IndexOf(args,"--popup-paint")>=0) {
+            Application.EnableVisualStyles();Application.SetCompatibleTextRenderingDefault(false);
+            PopupPaintCheck();return;
+        }
         if(Array.IndexOf(args,"--owner-fixture")>=0) {
             using(var form=new PassiveForm()) {
                 var work=Screen.PrimaryScreen.WorkingArea;form.Bounds=new Rectangle(work.Right-340,work.Top+10,320,40);
