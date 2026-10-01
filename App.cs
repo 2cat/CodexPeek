@@ -22,8 +22,8 @@ class View {
     public string headline {get;set;} public string quotaText {get;set;} public string tone {get;set;}
     public int running {get;set;} public int waiting {get;set;} public bool connected {get;set;}
     public double? updatedAt {get;set;} public string diagnostic {get;set;}
-    public TaskItem[] tasks {get;set;} public Limit[] windows {get;set;}
-    public static View Offline() {return new View {headline="状态未同步",quotaText="额度暂不可用",tone="muted",tasks=new TaskItem[0],windows=new Limit[0],diagnostic="正在连接 Codex 桌面端"};}
+    public TaskItem[] tasks {get;set;} public TaskItem[] recentTasks {get;set;} public Limit[] windows {get;set;}
+    public static View Offline() {return new View {headline="状态未同步",quotaText="额度暂不可用",tone="muted",tasks=new TaskItem[0],recentTasks=new TaskItem[0],windows=new Limit[0],diagnostic="正在连接 Codex 桌面端"};}
 }
 
 static class Program {
@@ -50,7 +50,7 @@ static class Program {
 }
 
 static class Theme {
-    public static Color Bg=Color.FromArgb(32,32,34),Text=Color.FromArgb(242,242,242),Muted=Color.FromArgb(170,170,178),Line=Color.FromArgb(57,57,61);
+    public static Color Bg=Color.FromArgb(32,32,34),Text=Color.FromArgb(242,242,242),Muted=Color.FromArgb(190,190,198),Line=Color.FromArgb(57,57,61);
     public static Color Accent(string tone) {return tone=="amber"?Color.FromArgb(235,182,82):tone=="red"?Color.FromArgb(245,119,126):tone=="blue"?Color.FromArgb(113,166,247):Muted;}
     public static Font Font(float pixels,bool bold=false) {return new Font(SystemFonts.MessageBoxFont.FontFamily,pixels,bold?FontStyle.Bold:FontStyle.Regular,GraphicsUnit.Pixel);}
     public static bool Transparency {get{using(var key=Registry.CurrentUser.OpenSubKey("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"))return !SystemInformation.HighContrast && (key==null || Convert.ToInt32(key.GetValue("EnableTransparency",1))!=0);}}
@@ -168,7 +168,7 @@ class Peek : Form {
         if(!closing)try{BeginInvoke((Action)(()=>{safeArea=place;measured=DateTime.UtcNow;measuring=false;}));}catch{}
     }
     protected override void OnPaint(PaintEventArgs e) {
-        e.Graphics.Clear(backdrop?Color.FromArgb(hover?180:155,Theme.Bg):hover?Color.FromArgb(42,45,51):Theme.Bg);
+        e.Graphics.Clear(backdrop?Color.FromArgb(hover?100:70,Theme.Bg):hover?Color.FromArgb(42,45,51):Theme.Bg);
         e.Graphics.SmoothingMode=SmoothingMode.AntiAlias;
         using(var path=Theme.Rounded(new Rectangle(1,1,Width-3,Height-3),S(8)))using(var pen=new Pen(Color.FromArgb(hover?38:22,Color.White)))e.Graphics.DrawPath(pen,path);
         using(var brush=new SolidBrush(Theme.Accent(Data.tone)))e.Graphics.FillEllipse(brush,S(11),S(10),S(4),S(4));
@@ -201,16 +201,17 @@ class TaskList : Panel {
 }
 
 class Flyout : Form {
-    readonly Peek owner;readonly Panel list=new TaskList();readonly Button open=new Button();readonly Label empty=new Label(),hint=new Label();
+    readonly Peek owner;readonly Panel list=new TaskList();readonly Button open=new Button();readonly Label empty=new Label(),hint=new Label(),recent=new Label();
     string ids="";bool layingOut,backdrop;Font footerFont,emptyFont,hintFont;
     // Limit background brightness so secondary text remains readable over Acrylic.
-    public Color Surface {get{return backdrop?Color.FromArgb(195,Theme.Bg):Theme.Bg;}}
+    public Color Surface {get{return backdrop?Color.FromArgb(85,Theme.Bg):Theme.Bg;}}
     int S(float v){return owner.S(v);}
     public Flyout(Peek parent) {
         owner=parent;Text="Codex 本机任务";AccessibleName=Text;AutoScaleMode=AutoScaleMode.None;FormBorderStyle=FormBorderStyle.None;ShowInTaskbar=Peek.Review;StartPosition=FormStartPosition.Manual;TopMost=true;BackColor=Theme.Bg;DoubleBuffered=true;KeyPreview=true;
-        list.AutoScroll=true;list.BackColor=Theme.Bg;list.Layout+=(s,e)=>{foreach(var row in list.Controls.OfType<TaskRow>())if(row.Width!=list.ClientSize.Width)row.Width=list.ClientSize.Width;};Controls.Add(list);
+        list.AutoScroll=true;list.BackColor=Theme.Bg;list.Layout+=(s,e)=>{foreach(var row in list.Controls.OfType<TaskRow>())if(row.Width!=list.ClientSize.Width)row.Width=list.ClientSize.Width;recent.Width=Math.Max(0,list.ClientSize.Width-S(12));};Controls.Add(list);
         empty.TextAlign=ContentAlignment.MiddleCenter;empty.ForeColor=Theme.Text;empty.BackColor=Theme.Bg;list.Controls.Add(empty);
         hint.TextAlign=ContentAlignment.MiddleCenter;hint.ForeColor=Theme.Muted;hint.BackColor=Theme.Bg;list.Controls.Add(hint);
+        recent.Text="最近任务";recent.TextAlign=ContentAlignment.MiddleLeft;recent.ForeColor=Theme.Muted;recent.BackColor=Theme.Bg;list.Controls.Add(recent);
         open.Text="打开 Codex  ↗";open.AccessibleName="打开 Codex";open.FlatStyle=FlatStyle.Flat;open.FlatAppearance.BorderSize=0;open.ForeColor=Theme.Text;open.BackColor=Theme.Bg;open.Cursor=Cursors.Hand;open.Click+=(s,e)=>owner.OpenTask(null);Controls.Add(open);
         Deactivate+=(s,e)=>Hide();VisibleChanged+=(s,e)=>{if(!Visible)owner.RestoreTooltip();};
     }
@@ -219,7 +220,7 @@ class Flyout : Form {
     protected override void WndProc(ref Message m) {if(m.Msg==0x83&&m.WParam!=IntPtr.Zero){m.Result=IntPtr.Zero;return;}if(m.Msg==0x84){m.Result=new IntPtr(1);return;}base.WndProc(ref m);}
     protected override void OnHandleCreated(EventArgs e) {
         base.OnHandleCreated(e);backdrop=Native.PopupChrome(Handle,Theme.Transparency);
-        if(backdrop){BackColor=Color.Black;empty.BackColor=hint.BackColor=open.BackColor=Color.Transparent;}
+        if(backdrop){BackColor=Color.Black;empty.BackColor=hint.BackColor=recent.BackColor=open.BackColor=Color.Transparent;}
         open.FlatAppearance.MouseOverBackColor=open.FlatAppearance.MouseDownBackColor=Color.FromArgb(45,45,49);
         Native.SetWindowPos(Handle,IntPtr.Zero,0,0,0,0,0x37);
     }
@@ -228,32 +229,36 @@ class Flyout : Form {
         if(layingOut)return;layingOut=true;Point scroll=list.AutoScrollPosition;list.SuspendLayout();
         try {
             View data=owner.Data;AccessibleName="Codex 本机任务，"+data.running+" 项运行，"+data.waiting+" 项待处理";Rectangle work=Screen.FromControl(owner).WorkingArea;
-            int height=S(data.tasks.Length==0?184:128+data.tasks.Length*132);height=Math.Min(height,(int)(work.Height*.7));
+            var history=data.recentTasks??new TaskItem[0];var items=data.tasks.Concat(history).ToArray();int divider=data.tasks.Length>0&&history.Length>0?36:0;
+            AccessibleName+="，"+history.Length+" 个历史任务";
+            int height=S(items.Length==0?184:128+items.Length*132+divider);height=Math.Min(height,(int)(work.Height*.7));
             Rectangle anchor=owner.Visible?owner.Bounds:new Rectangle(Cursor.Position,new Size(1,1));
             Bounds=Placement.Popup(anchor,work,S(460),height,S(8));
-            int top=data.tasks.Length==0?58:82;
-            int contentHeight=Math.Max(0,data.tasks.Length*S(132)-S(8));
-            int listHeight=Height-S(top+54);if(data.tasks.Length>0)listHeight=Math.Min(listHeight,contentHeight);
+            int top=items.Length==0?58:82;
+            int contentHeight=Math.Max(0,items.Length*S(132)-S(8)+S(divider));
+            int listHeight=Height-S(top+54);if(items.Length>0)listHeight=Math.Min(listHeight,contentHeight);
             list.Bounds=new Rectangle(S(16),S(top),Width-S(32),listHeight);
             list.AutoScrollMinSize=new Size(0,contentHeight);
             open.Bounds=new Rectangle(Width-S(142),Height-S(42),S(126),S(30));
-            if(footerFont==null||footerFont.Size!=S(12)){var old=footerFont;footerFont=Theme.Font(S(12));open.Font=footerFont;if(old!=null)old.Dispose();}
-            string next=String.Join("|",data.tasks.Select(t=>t.id));
-            if(ids!=next){foreach(var row in list.Controls.OfType<TaskRow>().ToArray()){list.Controls.Remove(row);row.Dispose();}ids=next;foreach(var task in data.tasks){var row=new TaskRow(owner);row.Item=task;row.Click+=(s,e)=>owner.OpenTask(((TaskRow)s).Item.id);list.Controls.Add(row);}}
+            if(footerFont==null||footerFont.Size!=S(12)){var old=footerFont;footerFont=Theme.Font(S(12));open.Font=recent.Font=footerFont;if(old!=null)old.Dispose();}
+            string next=String.Join("|",items.Select(t=>t.id));
+            if(ids!=next){foreach(var row in list.Controls.OfType<TaskRow>().ToArray()){list.Controls.Remove(row);row.Dispose();}ids=next;foreach(var task in items){var row=new TaskRow(owner);row.Item=task;row.Click+=(s,e)=>owner.OpenTask(((TaskRow)s).Item.id);list.Controls.Add(row);}}
             int y=0,index=0;Point offset=list.AutoScrollPosition;
-            foreach(var row in list.Controls.OfType<TaskRow>()){row.Item=data.tasks[index++];row.Bounds=new Rectangle(0,y+offset.Y,list.ClientSize.Width,S(124));row.AccessibleName=row.Item.title+"，"+row.Item.detail;row.AccessibleDescription=row.Item.progress;row.Invalidate();y+=S(132);}
-            empty.Visible=hint.Visible=data.tasks.Length==0;empty.Bounds=new Rectangle(0,S(8),list.ClientSize.Width,S(28));empty.Text=data.connected?"暂无运行任务":"状态未同步";
+            foreach(var row in list.Controls.OfType<TaskRow>()){if(index==data.tasks.Length)y+=S(divider);row.Item=items[index++];row.Bounds=new Rectangle(0,y+offset.Y,list.ClientSize.Width,S(124));row.AccessibleName=row.Item.title+"，"+(row.Item.state=="completed"?"历史任务，":"")+row.Item.detail;row.AccessibleDescription=row.Item.progress;row.Invalidate();y+=S(132);}
+            recent.Visible=divider>0;recent.Bounds=new Rectangle(S(6),data.tasks.Length*S(132)+offset.Y,list.ClientSize.Width-S(12),S(28));
+            empty.Visible=hint.Visible=items.Length==0;empty.Bounds=new Rectangle(0,S(8),list.ClientSize.Width,S(28));empty.Text=data.connected?"暂无任务记录":"状态未同步";
             hint.Bounds=new Rectangle(0,S(39),list.ClientSize.Width,S(25));hint.Text=data.connected?"开始新任务后，执行详情会显示在这里":data.diagnostic;
             if(emptyFont==null||emptyFont.Size!=S(14)){var old=emptyFont;emptyFont=Theme.Font(S(14));empty.Font=emptyFont;if(old!=null)old.Dispose();}
             if(hintFont==null||hintFont.Size!=S(12)){var old=hintFont;hintFont=Theme.Font(S(12));hint.Font=hintFont;if(old!=null)old.Dispose();}
             Invalidate();
-        }finally{list.ResumeLayout(true);list.AutoScrollPosition=new Point(0,-scroll.Y);layingOut=false;}
+        }finally{list.ResumeLayout(true);list.PerformLayout();list.AutoScrollPosition=new Point(0,-scroll.Y);layingOut=false;}
     }
     protected override void OnPaint(PaintEventArgs e) {
         var g=e.Graphics;g.Clear(Surface);View d=owner.Data;
         using(var font=Theme.Font(S(16),true))Theme.TextAt(g,"Codex",font,Theme.Text,new Rectangle(S(22),S(15),S(70),S(29)));
         using(var font=Theme.Font(S(13)))Theme.TextAt(g,"本机任务",font,Theme.Muted,new Rectangle(S(96),S(16),S(108),S(28)));
         if(d.tasks.Length>0)using(var font=Theme.Font(S(12)))Theme.TextAt(g,d.running+" 项运行   ·   "+d.waiting+" 项待处理",font,Theme.Muted,new Rectangle(S(22),S(48),Width-S(44),S(23)));
+        else if(d.recentTasks!=null&&d.recentTasks.Length>0)using(var font=Theme.Font(S(12)))Theme.TextAt(g,"最近 "+d.recentTasks.Length+" 个任务",font,Theme.Muted,new Rectangle(S(22),S(48),Width-S(44),S(23)));
         using(var pen=new Pen(Color.FromArgb(35,Color.White))){g.DrawLine(pen,S(22),Height-S(48),Width-S(22),Height-S(48));}
         string sync=owner.Preview?"界面预览 · 演示数据":d.connected?"已连接":"状态未同步";
         using(var font=Theme.Font(S(12)))Theme.TextAt(g,sync,font,Theme.Muted,new Rectangle(S(22),Height-S(41),Width-S(176),S(28)));
@@ -270,16 +275,17 @@ class TaskRow : Button {
             using(var brush=new SolidBrush(Color.FromArgb(hover||Focused?24:10,Color.White)))g.FillPath(brush,path);
             using(var pen=new Pen(Focused&&ShowFocusCues?Theme.Accent("blue"):Color.FromArgb(hover?42:24,Color.White),Focused&&ShowFocusCues?S(1):1))g.DrawPath(pen,path);
         }
-        string tone=Item.state=="approval"||Item.state=="input"?"amber":Item.state=="failed"?"red":"blue";
-        string label=Item.state=="approval"?"等待确认":Item.state=="input"?"等待回复":Item.state=="failed"?"异常":"运行中";
+        bool completed=Item.state=="completed";
+        string tone=completed?"muted":Item.state=="approval"||Item.state=="input"?"amber":Item.state=="failed"?"red":"blue";
+        string label=completed?"已结束":Item.state=="approval"?"等待确认":Item.state=="input"?"等待回复":Item.state=="failed"?"异常":"运行中";
         using(var font=Theme.Font(S(14),true))Theme.TextAt(g,Item.title,font,Theme.Text,new Rectangle(S(13),S(8),Width-S(112),S(26)));
         using(var font=Theme.Font(S(12)))Theme.TextAt(g,label,font,Theme.Accent(tone),new Rectangle(Width-S(90),S(9),S(78),S(25)));
         using(var font=Theme.Font(S(13)))Theme.TextAt(g,Item.detail,font,Theme.Text,new Rectangle(S(13),S(38),Width-S(26),S(26)));
         using(var font=Theme.Font(S(12)))Theme.TextAt(g,String.IsNullOrWhiteSpace(Item.progress)?"点击打开原任务，查看执行记录":Item.progress,font,Theme.Muted,new Rectangle(S(13),S(67),Width-S(26),S(24)));
         double? since=Item.waitingSince??Item.startedAt;
-        string elapsed="";if(since.HasValue){var t=DateTime.UtcNow-Peek.Epoch(since.Value);if(t.TotalSeconds<0)t=TimeSpan.Zero;elapsed=(Item.waitingSince.HasValue?"已等待 ":"本轮已用 ")+(t.TotalHours>=1?((int)t.TotalHours)+"小时 ":"")+t.Minutes.ToString("00")+":"+t.Seconds.ToString("00");}
+        string elapsed="";if(completed){elapsed=Item.startedAt.HasValue?"最近运行 "+Peek.Epoch(Item.startedAt.Value).ToLocalTime().ToString("M月d日 HH:mm"):"历史任务";}else if(since.HasValue){var t=DateTime.UtcNow-Peek.Epoch(since.Value);if(t.TotalSeconds<0)t=TimeSpan.Zero;elapsed=(Item.waitingSince.HasValue?"已等待 ":"本轮已用 ")+(t.TotalHours>=1?((int)t.TotalHours)+"小时 ":"")+t.Minutes.ToString("00")+":"+t.Seconds.ToString("00");}
         using(var font=Theme.Font(S(11)))Theme.TextAt(g,elapsed,font,Theme.Muted,new Rectangle(S(13),S(96),Width-S(110),S(21)));
-        using(var font=Theme.Font(S(12)))Theme.TextAt(g,tone=="amber"?"去处理  ↗":"打开  ↗",font,Theme.Accent(tone),new Rectangle(Width-S(92),S(94),S(80),S(24)));
+        using(var font=Theme.Font(S(12)))Theme.TextAt(g,completed?"查看  ↗":tone=="amber"?"去处理  ↗":"打开  ↗",font,Theme.Accent(tone),new Rectangle(Width-S(92),S(94),S(80),S(24)));
     }
 }
 

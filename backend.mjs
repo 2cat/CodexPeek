@@ -6,16 +6,17 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
-import { present, TaskFeed } from './status.mjs';
+import { present, TaskFeed, readRecentHistory } from './status.mjs';
 
 const once = process.argv.includes('--once');
 const codexHome = process.env.CODEX_HOME || path.join(process.env.USERPROFILE,'.codex');
 const feed = new TaskFeed(), known = new Map(), owners = new Map();
 let socket, clientId, connected = false, buffer = Buffer.alloc(0), quota = null, quotaChild, retry, poll, closed = false, catalogError = false, protocolError = false;
-let updatedAt = null, initTimer;
+let updatedAt = null, initTimer, history = [];
 
 function emit() {
-  console.log(JSON.stringify({...present(feed.tasks(),quota,connected && !catalogError && !protocolError,{lastTask:feed.lastTask()}),updatedAt,diagnostic:protocolError?'Codex 状态协议发生变化，请更新组件':catalogError?'无法读取本机任务列表':connected?'':'等待 Codex 桌面端连接'}));
+  const recentTasks=feed.recentTasks(history.filter(t=>!owners.has(t.id)));
+  console.log(JSON.stringify({...present(feed.tasks(),quota,connected && !catalogError && !protocolError,{lastTask:recentTasks[0] ?? null,recentTasks}),updatedAt,diagnostic:protocolError?'Codex 状态协议发生变化，请更新组件':catalogError?'无法读取本机任务列表':connected?'':'等待 Codex 桌面端连接'}));
 }
 function send(message) {
   if(!socket || socket.destroyed) return;
@@ -30,12 +31,13 @@ function scan() {
   let db;
   try {
     db = new DatabaseSync(path.join(codexHome,'state_5.sqlite'),{readOnly:true});
-    const rows = db.prepare("SELECT id, updated_at_ms FROM threads WHERE archived=0 AND source='vscode' AND (originator IS NULL OR originator='Codex Desktop') AND (thread_source IS NULL OR thread_source IN ('user','composer_link'))").all();
+    const rows = db.prepare("SELECT id, updated_at_ms, title, rollout_path FROM threads WHERE archived=0 AND source='vscode' AND (originator IS NULL OR originator='Codex Desktop') AND (thread_source IS NULL OR thread_source IN ('user','composer_link')) ORDER BY updated_at_ms DESC").all();
     const ids = new Set(rows.map(r => r.id));
-    for(const id of known.keys()) if(!ids.has(id)) {follow(id,false);known.delete(id);feed.remove(id);}
+    for(const id of known.keys()) if(!ids.has(id)) {follow(id,false);known.delete(id);owners.delete(id);feed.remove(id);}
     for(const row of rows) {
       if(!known.has(row.id) || known.get(row.id)!==row.updated_at_ms) { known.set(row.id,row.updated_at_ms);follow(row.id); }
     }
+    history=readRecentHistory(rows,codexHome);
     catalogError = false;
   } catch { catalogError = true; }
   finally { db?.close(); }
@@ -49,7 +51,7 @@ function connect() {
   socket.on('connect',() => send({type:'request',requestId:randomUUID(),sourceClientId:clientId,version:0,method:'initialize',params:{clientType:'codex-peek'}}));
   socket.on('error',() => {});
   socket.on('close',() => {
-    clearTimeout(initTimer);connected = false; feed.clear();known.clear();owners.clear();clearInterval(poll);emit();
+    clearTimeout(initTimer);connected = false; feed.clear();history=[];known.clear();owners.clear();clearInterval(poll);emit();
     if(!closed) retry = setTimeout(connect,3000);
   });
   socket.on('data',chunk => {

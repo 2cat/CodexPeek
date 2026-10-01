@@ -1,4 +1,7 @@
-export function present(tasks, quota = null, connected = true, {lastTask = null, now = Date.now()} = {}) {
+import { openSync, readSync, fstatSync, closeSync, realpathSync } from 'node:fs';
+import path from 'node:path';
+
+export function present(tasks, quota = null, connected = true, {lastTask = null, recentTasks = [], now = Date.now()} = {}) {
   const order = {approval:0,input:1,failed:2,running:3};
   tasks = connected ? tasks.filter(t => t.state in order).sort((a,b) => order[a.state]-order[b.state] || a.id.localeCompare(b.id)) : [];
   const count = state => tasks.filter(t => t.state === state).length;
@@ -8,7 +11,7 @@ export function present(tasks, quota = null, connected = true, {lastTask = null,
   const windows = buckets.flatMap(b => [b?.primary,b?.secondary].filter(w => Number.isFinite(w?.usedPercent)).map(w => ({remaining:Math.max(0,Math.min(100,100-w.usedPercent)),label:windowLabel(w.windowDurationMins),resetsAt:w.resetsAt ?? null})));
   windows.sort((a,b) => a.remaining-b.remaining);
   const limit = windows[0];
-  return {headline, running, waiting:approval+input, tasks, connected, tone:!connected?'muted':approval||input?'amber':failed?'red':running?'blue':'muted', quotaText:limit ? `剩余 ${Math.floor(limit.remaining)}%${resetCountdown(limit.resetsAt,now)}${quota.stale?' · 未更新':''}` : '额度暂不可用', windows};
+  return {headline, running, waiting:approval+input, tasks, recentTasks:connected?recentTasks:[], connected, tone:!connected?'muted':approval||input?'amber':failed?'red':running?'blue':'muted', quotaText:limit ? `剩余 ${Math.floor(limit.remaining)}%${resetCountdown(limit.resetsAt,now)}${quota.stale?' · 未更新':''}` : '额度暂不可用', windows};
 }
 
 function compactActivity(detail) {
@@ -26,6 +29,36 @@ function resetCountdown(resetsAt, now) {
 
 function windowLabel(minutes) {
   return !Number.isFinite(minutes) ? '当前周期' : minutes%1440===0 ? `${minutes/1440}天` : minutes%60===0 ? `${minutes/60}小时` : `${minutes}分钟`;
+}
+
+// Only a persisted public terminal event establishes history for an unloaded conversation.
+// ponytail: 12 candidates and 256KiB per rollout; widen if older or larger histories are omitted.
+export function readRecentHistory(rows, codexHome) {
+  return rows.slice(0,12).map(row=>{
+    let file;
+    try {
+      const relative=path.relative(realpathSync(codexHome),realpathSync(row.rollout_path));
+      if(path.isAbsolute(relative) || !['sessions','archived_sessions'].includes(relative.split(path.sep)[0])) return null;
+      file=openSync(row.rollout_path,'r');
+      const stat=fstatSync(file);
+      if(!stat.isFile()) return null;
+      const size=Math.min(stat.size,256*1024),start=stat.size-size,buffer=Buffer.alloc(size);
+      let text=buffer.subarray(0,readSync(file,buffer,0,size,start)).toString('utf8');
+      if(start>0) text=text.includes('\n')?text.slice(text.indexOf('\n')+1):''; // Drop the potentially partial first record.
+      let last=null,startedAt=null,turnId=null;
+      for(const line of text.split('\n')) {
+        if(!line.trim()) continue;
+        const event=JSON.parse(line),payload=event.payload;
+        if(event.type!=='event_msg' || !['task_started','task_complete','turn_aborted'].includes(payload?.type)) continue;
+        if(payload.type==='task_started') {startedAt=payload.started_at;turnId=payload.turn_id;}
+        else if(turnId && turnId!==payload.turn_id) continue;
+        last={type:payload.type,startedAt:payload.started_at ?? startedAt,message:payload.last_agent_message};
+      }
+      if(!['task_complete','turn_aborted'].includes(last?.type) || !Number.isFinite(last.startedAt) || last.startedAt<=0) return null;
+      return {id:row.id,title:row.title || '未命名任务',state:'completed',detail:last.type==='turn_aborted'?'上次已停止':'任务已结束',progress:typeof last.message==='string'?last.message.replace(/\s+/g,' ').slice(0,220):'',startedAt:last.startedAt*1000};
+    } catch { return null; }
+    finally {if(file!==undefined) closeSync(file);}
+  }).filter(Boolean);
 }
 
 // Desktop IPC is internal. A revision/version mismatch removes the old state until a fresh snapshot arrives.
@@ -60,7 +93,11 @@ export class TaskFeed {
     } catch { this.remove(id); return false; }
   }
   tasks() { return [...this.states].map(([id,{state}]) => {const task=taskFromState(id,state);return task?{...task,waitingSince:this.observed.get(id)?.waitingSince ?? null}:null;}).filter(Boolean); }
-  lastTask() { return [...this.states].map(([id,{state}]) => taskFromState(id,state,true)).filter(t => t?.state==='idle' && Number.isFinite(t.startedAt)).sort((a,b) => b.startedAt-a.startedAt)[0] ?? null; }
+  recentTasks(history=[]) {
+    const tasks=[...this.states].map(([id,{state}])=>taskFromState(id,state,true)).filter(t=>t?.state==='idle' && Number.isFinite(t.startedAt)).concat(history.filter(t=>!this.states.has(t.id)));
+    return [...new Map(tasks.map(t=>[t.id,t])).values()].sort((a,b)=>b.startedAt-a.startedAt || a.id.localeCompare(b.id)).slice(0,3).map(t=>({...t,state:'completed'}));
+  }
+  lastTask(history=[]) { return this.recentTasks(history)[0] ?? null; }
   remove(id) {this.states.delete(id);this.observed.delete(id);}
   clear() { this.states.clear();this.observed.clear(); }
 }
@@ -71,7 +108,7 @@ function taskFromState(id,s,includeIdle=false) {
   const turn = turns.reduce((last,t) => (t.turnStartedAtMs ?? 0) >= (last?.turnStartedAtMs ?? 0) ? t : last,null);
   const runtime = s.threadRuntimeStatus, flags = runtime?.activeFlags ?? [];
   const state = flags.includes('waitingOnApproval') ? 'approval' : flags.includes('waitingOnUserInput') ? 'input' : runtime?.type === 'systemError' || (turn?.status==='failed' && s.hasUnreadTurn===true) ? 'failed' : runtime?.type === 'active' ? 'running' : 'idle';
-  if(state === 'idle' && !includeIdle) return null;
+  if(state === 'idle' && (!includeIdle || !['completed','failed','interrupted','cancelled'].includes(turn?.status))) return null;
   const items = turn?.items ?? [];
   const activeItem = [...items].reverse().find(i => i.status === 'inProgress');
   const latest = items.at(-1);
@@ -80,6 +117,7 @@ function taskFromState(id,s,includeIdle=false) {
   if(state === 'approval') detail = '需要确认操作，请打开原任务处理';
   if(state === 'input') detail = '任务正在等待你的回复';
   if(state === 'failed') detail = '任务遇到异常，请打开原任务查看';
+  if(state === 'idle') detail = turn?.status==='failed' ? '上次执行失败' : ['interrupted','cancelled'].includes(turn?.status) ? '上次已停止' : '任务已结束';
   const comment = [...items].reverse().find(i => i.type === 'agentMessage');
   const text = typeof comment?.text === 'string' ? comment.text : '';
   return {id,title:s.title || '未命名任务',state,detail,progress:text.replace(/\s+/g,' ').slice(0,220),startedAt:turn?.turnStartedAtMs ?? null};
