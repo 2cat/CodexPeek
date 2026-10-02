@@ -25,3 +25,6 @@ jobs:
       - name: Build application and run data and native layout tests
         shell: pwsh
         run: ./build.ps1
+      - name: Check fixed entry deployment and rollback
+        shell: pwsh
+        run: ./deploy-check.ps1
