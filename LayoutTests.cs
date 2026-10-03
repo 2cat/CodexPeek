@@ -19,6 +19,12 @@ class LayoutTests {
     [StructLayout(LayoutKind.Sequential)]struct POINT {public int X,Y;}
     [DllImport("user32.dll")]static extern IntPtr WindowFromPoint(POINT point);
     [DllImport("user32.dll")]static extern IntPtr GetAncestor(IntPtr h,uint flags);
+    [DllImport("user32.dll")]static extern IntPtr SendMessage(IntPtr h,int msg,IntPtr wParam,IntPtr lParam);
+    static void CheckNoScrollbars(Panel list) {
+        Point edge=list.PointToScreen(new Point(list.Width-1,list.Height/2));
+        int hit=SendMessage(list.Handle,0x84,IntPtr.Zero,new IntPtr((edge.Y<<16)|(edge.X&0xFFFF))).ToInt32();
+        Check(list.ClientSize==list.Size&&hit!=6&&hit!=7,"task list keeps its full client area with no scrollbar at the right edge; hit="+hit+" offset="+list.AutoScrollPosition+" client="+list.ClientSize+" size="+list.Size);
+    }
     static void DockingCheck() {
         using(var fixture=new Process())using(var widget=new PassiveForm()) {
             fixture.StartInfo=new ProcessStartInfo(Application.ExecutablePath,"--owner-fixture"){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardInput=true};
@@ -137,39 +143,59 @@ class LayoutTests {
             var historyList=flyout.Controls.OfType<Panel>().Single();
             Check(historyList.Controls.OfType<TaskRow>().Select(row=>row.Item.id).SequenceEqual(new[]{"recent-a","recent-b","recent-c"}),"idle popup shows the three recent task links");
             Check(!historyList.Controls.OfType<Label>().Any(label=>label.Text.StartsWith("暂无")&&label.Visible),"history replaces the empty state");
+            owner.DpiScale=1.75f;
+            owner.Data.tasks=new[]{new TaskItem{id="active",title="正在运行的任务",state="running"}};
+            flyout.RefreshData();Application.DoEvents();
+            int availableHeight=Screen.FromControl(owner).WorkingArea.Height-28;
+            Check(flyout.Height==Math.Min(1211,availableHeight),"one active and three recent tasks expand to their full height within the screen");
+            if(availableHeight>=1211)Check(historyList.Controls.OfType<TaskRow>().All(row=>row.Top>=0&&row.Bottom<=historyList.ClientSize.Height),"all four task cards are fully visible without scrolling");
+            CheckNoScrollbars(historyList);
+            owner.DpiScale=1;
             owner.Data.recentTasks=new TaskItem[0];
             owner.Data.tasks=Enumerable.Range(0,12).Select(i=>new TaskItem{id=i.ToString(),title="任务 "+i}).ToArray();
             flyout.RefreshData();flyout.Show();Application.DoEvents();
             var list=flyout.Controls.OfType<Panel>().Single();
-            Check(flyout.Height<=Screen.FromControl(owner).WorkingArea.Height*.7,"many tasks stay within the screen height cap");
+            Check(flyout.Height<=Screen.FromControl(owner).WorkingArea.Height-16,"many tasks stay within the screen with margins");
             Check(list.VerticalScroll.Visible,"many tasks can scroll");
+            CheckNoScrollbars(list);
             Check(!list.HorizontalScroll.Visible,"showing a long list never adds a horizontal scrollbar; client="+list.ClientSize+" display="+list.DisplayRectangle+" rows="+String.Join(",",list.Controls.OfType<TaskRow>().Select(row=>row.Bounds.ToString())));
-            Check(list.Controls.OfType<TaskRow>().All(row=>row.Right<=list.ClientSize.Width),"cards leave room for the scrollbar");
+            Check(list.Controls.OfType<TaskRow>().All(row=>row.Right<=list.ClientSize.Width),"cards fit the available width");
             list.AutoScrollPosition=new Point(0,100);flyout.RefreshData();
             Check(list.AutoScrollPosition.Y==-100,"live updates preserve the task list scroll position");
+            CheckNoScrollbars(list);
             owner.Data.tasks=owner.Data.tasks.Concat(new[]{new TaskItem{id="added",title="新增任务"}}).ToArray();
             flyout.RefreshData();
             Check(list.AutoScrollPosition.Y==-100,"adding a task preserves the task list scroll position");
-            Check(list.Controls.OfType<TaskRow>().All(row=>row.Right<=list.ClientSize.Width),"added cards leave room for the scrollbar");
+            Check(list.Controls.OfType<TaskRow>().All(row=>row.Right<=list.ClientSize.Width),"added cards fit the available width");
+            CheckNoScrollbars(list);
             Check(!list.HorizontalScroll.Visible,"added cards never need horizontal scrolling");
             owner.Data.tasks=owner.Data.tasks.Take(owner.Data.tasks.Length-1).ToArray();
             flyout.RefreshData();
             Check(list.AutoScrollPosition.Y==-100,"removing a task preserves the task list scroll position");
-            Check(list.Controls.OfType<TaskRow>().All(row=>row.Right<=list.ClientSize.Width),"remaining cards leave room for the scrollbar");
+            Check(list.Controls.OfType<TaskRow>().All(row=>row.Right<=list.ClientSize.Width),"remaining cards fit the available width");
+            CheckNoScrollbars(list);
             Check(!list.HorizontalScroll.Visible,"remaining cards never need horizontal scrolling");
             owner.Data.recentTasks=new[]{new TaskItem{id="recent-a",title="最近任务 A",state="completed"}};
             flyout.RefreshData();Application.DoEvents();
             Check(list.Controls.OfType<TaskRow>().Last().Item.id=="recent-a","active tasks stay above history");
             Check(!list.HorizontalScroll.Visible,"mixed active and recent tasks never need horizontal scrolling");
-            Check(list.Controls.OfType<Label>().Single(label=>label.Text=="最近任务").Right<=list.ClientSize.Width,"history heading leaves room for the scrollbar");
+            Check(list.Controls.OfType<Label>().Single(label=>label.Text=="最近任务").Right<=list.ClientSize.Width,"history heading fits the available width");
             Check(list.AutoScrollPosition.Y==-100,"history updates preserve the task list scroll position");
+            SendMessage(list.Handle,0x20A,new IntPtr(unchecked((int)0xFF880000)),IntPtr.Zero);Application.DoEvents();
+            Check(list.AutoScrollPosition.Y<-100,"mouse wheel reaches overflow tasks without a scrollbar");
+            CheckNoScrollbars(list);
+            var last=list.Controls.OfType<TaskRow>().Last();last.Select();Application.DoEvents();
+            Check(last.Focused&&last.Top>=0&&last.Bottom<=list.ClientSize.Height,"keyboard focus brings the final task fully into view");
+            CheckNoScrollbars(list);
             owner.Data.tasks=new TaskItem[0];
             owner.Data.recentTasks=new[]{new TaskItem{id="recent-a",state="completed"},new TaskItem{id="recent-b",state="completed"},new TaskItem{id="recent-c",state="completed"}};
             owner.DpiScale=1.75f;flyout.RefreshData();Application.DoEvents();
             Check(list.Controls.OfType<TaskRow>().All(row=>row.Height==217),"history cards use readable dimensions at 175% DPI");
+            if(Screen.FromControl(owner).WorkingArea.Height>=945)Check(list.Controls.OfType<TaskRow>().All(row=>row.Top>=0&&row.Bottom<=list.ClientSize.Height),"all three recent tasks fit at 175% DPI");
+            CheckNoScrollbars(list);
             owner.DpiScale=1;flyout.RefreshData();Application.DoEvents();
             Check(!list.HorizontalScroll.Visible,"shrinking history never adds a horizontal scrollbar");
-            // Three cards can exceed the 70% screen cap on a small desktop; one fits.
+            // A genuinely small work area can still overflow; shrinking clears its offset.
             owner.Data.recentTasks=owner.Data.recentTasks.Take(1).ToArray();flyout.RefreshData();Application.DoEvents();
             Check(!list.HorizontalScroll.Visible&&!list.VerticalScroll.Visible,"shrinking to a recent task that fits removes scrollbars");
             Check(list.AutoScrollPosition==Point.Empty,"shrinking history clears the old scroll offset");

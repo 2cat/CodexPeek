@@ -196,6 +196,12 @@ class Peek : Form {
 
 class TaskList : Panel {
     public TaskList(){DoubleBuffered=true;}
+    protected override void WndProc(ref Message m) {
+        // Keep the full panel as client area; AutoScroll still handles wheel and focus.
+        if(m.Msg==0x83||m.Msg==0x85){m.Result=IntPtr.Zero;return;}
+        if(m.Msg==0x84){m.Result=new IntPtr(1);return;}
+        base.WndProc(ref m);
+    }
     protected override void OnPaintBackground(PaintEventArgs e) {var popup=FindForm() as Flyout;e.Graphics.Clear(popup==null?Theme.Bg:popup.Surface);}
 }
 
@@ -230,7 +236,7 @@ class Flyout : Form {
             View data=owner.Data;AccessibleName="Codex 本机任务，"+data.running+" 项运行，"+data.waiting+" 项待处理";Rectangle work=Screen.FromControl(owner).WorkingArea;
             var history=data.recentTasks??new TaskItem[0];var items=data.tasks.Concat(history).ToArray();int divider=data.tasks.Length>0&&history.Length>0?36:0;
             AccessibleName+="，"+history.Length+" 个历史任务";
-            int height=S(items.Length==0?184:128+items.Length*132+divider);height=Math.Min(height,(int)(work.Height*.7));
+            int height=S(items.Length==0?184:128+items.Length*132+divider);height=Math.Min(height,work.Height-S(16));
             Rectangle anchor=owner.Visible?owner.Bounds:new Rectangle(Cursor.Position,new Size(1,1));
             Bounds=Placement.Popup(anchor,work,S(460),height,S(8));
             int top=items.Length==0?58:82;
