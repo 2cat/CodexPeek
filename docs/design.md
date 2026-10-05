@@ -33,9 +33,13 @@
 
 入口的小圆点仅表示状态：蓝色运行、黄色等待确认或回复、红色异常、灰色空闲或未同步，不表示额度、进度或重置次数。接口没有提供历史重置次数，当前没有新增重置计数。
 
-入口和面板通过 DWM 使用原生圆角、边框及 Acrylic；保留原生 frame 并移除标题栏，不使用整窗 Opacity，避免文字跟着变淡。正常材质路径不设置窗口 Region；材质不可用时入口回退到实色圆角。[DWMSBT_TRANSIENTWINDOW](https://learn.microsoft.com/en-us/windows/win32/api/dwmapi/ne-dwmapi-dwm_systembackdrop_type) 使用系统 Desktop Acrylic，但不保证与任务栏按钮使用完全相同的材质参数。
+入口使用 `WS_EX_LAYERED` 和 `UpdateLayeredWindow` 逐像素合成，默认背景 alpha 为 1/255，让真实任务栏透出并保留整块点击区域。去掉入口独立的 Acrylic、边框和阴影；悬停与面板展开时分别增加 alpha 为 20/255、14/255 的白色高亮，圆角为 4 DIP。文字和状态点独立绘制，不使用整窗 Opacity 或颜色键。完全透明像素会穿透鼠标命中，因此保留最低非零背景 alpha，参见 [Layered Windows](https://learn.microsoft.com/en-us/windows/win32/winmsg/window-features#layered-windows)。
 
-深色底层原先 alpha 为入口 155 / 悬停 180、面板 195，遮盖过重。本次减为 70 / 100 / 85，并略提亮次要文字；这些数值是额外底色的 alpha，不是系统 Acrylic 的总不透明度。较亮背景下的文字可读性仍需实机检查。关闭系统透明效果或启用高对比度时，启动时使用实色背景；不支持系统材质时也使用实色背景。
+透明窗口在句柄创建、显示、尺寸变化和内容失效时主动呈现位图，不依赖系统自动发送 `WM_PAINT`。数据更新、悬停和展开/收起沿用现有 `Invalidate` 入口。关闭系统透明效果时入口使用实色圆角背景，高对比度使用系统背景和文字色；这些设置在重绘时读取。
+
+展开面板继续通过 DWM 使用原生圆角、细边框及 Acrylic，保留 frame 并移除标题栏。应用额外底色 alpha 保持 85/255，不代表系统 Acrylic 的总不透明度。[DWMSBT_TRANSIENTWINDOW](https://learn.microsoft.com/en-us/windows/win32/api/dwmapi/ne-dwmapi-dwm_systembackdrop_type) 使用 Desktop Acrylic，独立窗口不能保证与系统内部任务栏按钮材质逐像素一致。
+
+支持姿态检测的触摸设备进入平板姿态时，隐藏入口并收起已打开的面板，后台和系统托盘继续工作；主动点击托盘仍能查看详情。姿态由 `SM_CONVERTIBLESLATEMODE`、集成触摸状态和 `GetAutoRotationState` 共同判断，排除没有传感器或不支持旋转的普通桌面设备。监听 `WM_SETTINGCHANGE`，现有 750 毫秒定时器补查。接回键盘时清空旧位置并重新测量；测量回调带姿态代次，忽略切换前的结果，避免恢复过期位置。该行为依赖系统和驱动正确报告设备姿态，参见 [GetSystemMetrics](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getsystemmetrics) 和 [GetAutoRotationState](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getautorotationstate)。
 
 入口的两行字号为 13 / 11 DIP。任务卡片高 124 DIP、间隔 8 DIP、圆角 8 DIP；标题、执行详情、最近进展和计时字号为 14 / 13 / 12 / 11 DIP。整个卡片可点击，键盘焦点显示圆角蓝色描边。列表独立绘制玻璃底层，避免透明 Panel 重画父窗口产生间隙条带。无边框列表的非客户区尺寸、绘制和命中交给内容区，保留 AutoScroll 的滚轮及焦点处理，防止实时刷新重新绘出滚动条。卡片占满列表宽度，数据更新和任务增删完成布局后恢复滚动位置。空闲面板省略零任务计数，连接信息简化为“已连接”。
 

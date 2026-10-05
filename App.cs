@@ -87,7 +87,7 @@ class Peek : Form {
     readonly System.Windows.Forms.Timer timer=new System.Windows.Forms.Timer();
     readonly NotifyIcon tray=new NotifyIcon(); readonly ToolTip tip=new ToolTip();
     Process backend; Flyout flyout; DateTime lastData=DateTime.MinValue,nextStart=DateTime.MinValue,nextMeasure=DateTime.MinValue;
-    bool closing,locked,measuring,hover,tabletMode; Rectangle safeArea,measuredBounds; IntPtr measuredTaskbar; int measuredDpi,postureGeneration; DateTime measured=DateTime.MinValue; Icon appIcon;
+    bool closing,locked,measuring,hover,tabletMode,paintingEntry; Rectangle safeArea,measuredBounds; IntPtr measuredTaskbar; int measuredDpi,postureGeneration; DateTime measured=DateTime.MinValue; Icon appIcon;
     public Peek(bool openAtStart=false,View preview=null) {
         Preview=preview!=null;
         Text="Codex Peek";AccessibleName="Codex 状态栏";FormBorderStyle=FormBorderStyle.None;ShowInTaskbar=Review;TopMost=true;StartPosition=FormStartPosition.Manual;
@@ -115,7 +115,11 @@ class Peek : Form {
     protected override void OnHandleCreated(EventArgs e) {
         base.OnHandleCreated(e);
         Native.SetWindowPos(Handle,IntPtr.Zero,0,0,0,0,0x37);
+        PaintEntry();
     }
+    protected override void OnInvalidated(InvalidateEventArgs e) {base.OnInvalidated(e);PaintEntry();}
+    protected override void OnVisibleChanged(EventArgs e) {base.OnVisibleChanged(e);if(Visible)PaintEntry();}
+    protected override void OnSizeChanged(EventArgs e) {base.OnSizeChanged(e);PaintEntry();}
     static Icon MakeIcon() {
         using(var bitmap=new Bitmap(32,32)) using(var g=Graphics.FromImage(bitmap)) {
             g.SmoothingMode=SmoothingMode.AntiAlias;g.Clear(Color.Transparent);
@@ -184,6 +188,9 @@ class Peek : Form {
         }));}catch{}
     }
     void PaintEntry() {
+        if(!IsHandleCreated||Width<=0||Height<=0||closing||paintingEntry)return;
+        paintingEntry=true;
+        try {
         using(var bitmap=new Bitmap(Width,Height,System.Drawing.Imaging.PixelFormat.Format32bppPArgb))using(var g=Graphics.FromImage(bitmap)) {
             // Alpha 1 keeps the whole entry clickable while revealing the real taskbar.
             g.Clear(Color.FromArgb(1,0,0,0));g.SmoothingMode=SmoothingMode.AntiAlias;
@@ -195,6 +202,7 @@ class Peek : Form {
             using(var font=Theme.Font(S(11)))Theme.TextAt(g,Data.quotaText,font,muted,new Rectangle(S(20),S(22),Width-S(31),S(16)));
             Native.LayerEntry(Handle,bitmap,Location);
         }
+        }finally{paintingEntry=false;}
     }
     public void Toggle() {
         if(flyout==null||flyout.IsDisposed)flyout=new Flyout(this);
