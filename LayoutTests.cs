@@ -20,6 +20,7 @@ class LayoutTests {
     [DllImport("user32.dll")]static extern IntPtr WindowFromPoint(POINT point);
     [DllImport("user32.dll")]static extern IntPtr GetAncestor(IntPtr h,uint flags);
     [DllImport("user32.dll")]static extern IntPtr SendMessage(IntPtr h,int msg,IntPtr wParam,IntPtr lParam);
+    [DllImport("user32.dll",EntryPoint="GetWindowLongW")]static extern int GetWindowLong(IntPtr h,int index);
     static void CheckNoScrollbars(Panel list) {
         Point edge=list.PointToScreen(new Point(list.Width-1,list.Height/2));
         int hit=SendMessage(list.Handle,0x84,IntPtr.Zero,new IntPtr((edge.Y<<16)|(edge.X&0xFFFF))).ToInt32();
@@ -63,6 +64,39 @@ class LayoutTests {
         }
     }
     static void Check(bool value, string message) { if (!value) { Console.Error.WriteLine("FAIL: "+message); throw new Exception(message); } }
+    // Public window operations need no Explorer; --posture also waits for real taskbar recovery. System posture is unchanged.
+    static void PostureCheck(bool freshMeasurement) {
+        using(var owner=new Peek(false,View.Offline()))using(var poll=new System.Windows.Forms.Timer()) {
+            Exception failure=null;var watch=Stopwatch.StartNew();int stage=0;
+            poll.Interval=50;poll.Tick+=(s,e)=>{
+                try {
+                    Check(watch.ElapsedMilliseconds<10000,"entry appears after a fresh taskbar measurement");
+                    if(!owner.Visible)return;
+                    if(stage==0) {
+                        Check((GetWindowLong(owner.Handle,-20)&0x80000)!=0,"entry supports per-pixel transparent rendering");
+                        var blank=new POINT{X=owner.Right-8,Y=owner.Top+owner.Height/2};
+                        Check(GetAncestor(WindowFromPoint(blank),2)==owner.Handle,"blank background remains part of the clickable entry");
+                        owner.Toggle();var popup=Application.OpenForms.OfType<Flyout>().Single();
+                        Check(popup.Visible,"task list opens before entering tablet posture");
+                        owner.UpdatePosture(true);
+                        Check(!owner.Visible&&!popup.Visible,"tablet posture hides the entry and closes the task list");
+                        owner.Toggle();Check(popup.Visible,"tray action can still open the task list in tablet posture");
+                        owner.UpdatePosture(true);Check(popup.Visible,"repeated tablet notifications keep a manually opened task list available");
+                        owner.Toggle();owner.UpdatePosture(false);
+                        Check(!owner.Visible,"keyboard reconnection waits for a new measurement before showing the entry");
+                        if(!freshMeasurement){Console.WriteLine("PASS: native tablet hide, flyout close, tray access and hidden reconnection");poll.Stop();owner.Close();return;}
+                        stage=1;return;
+                    }
+                    IntPtr bar=Native.FindWindow("Shell_TrayWnd",null);Rectangle rect=Native.Rect(bar);
+                    Check(rect.Contains(owner.Bounds),"recovered entry fits the current taskbar");
+                    Console.WriteLine("PASS: native tablet hide, flyout close, tray access and fresh-measurement recovery");
+                }catch(Exception ex){failure=ex;}
+                poll.Stop();owner.Close();
+            };
+            owner.Shown+=(s,e)=>{if(!freshMeasurement){owner.UpdatePosture(false);owner.Show();}poll.Start();};Application.Run(owner);
+            if(failure!=null)throw failure;
+        }
+    }
     // Run on an unlocked, idle desktop: this checks the composed Acrylic pixels.
     static void PopupPaintCheck() {
         using(var background=new Form())using(var owner=new Peek())using(var timer=new System.Windows.Forms.Timer()) {
@@ -99,6 +133,10 @@ class LayoutTests {
     [STAThread]
     static void Main(string[] args) {
         Native.SetProcessDpiAwarenessContext(new IntPtr(-4));
+        if(Array.IndexOf(args,"--posture")>=0) {
+            Application.EnableVisualStyles();Application.SetCompatibleTextRenderingDefault(false);
+            PostureCheck(true);return;
+        }
         if(Array.IndexOf(args,"--popup-paint")>=0) {
             Application.EnableVisualStyles();Application.SetCompatibleTextRenderingDefault(false);
             PopupPaintCheck();return;
@@ -112,6 +150,11 @@ class LayoutTests {
             return;
         }
         Rectangle bar = new Rectangle(0,1516,2560,84);
+        Check(Native.IsTabletMode(0,197,true,0),"integrated touch and a supported rotation sensor enable slate posture");
+        Check(!Native.IsTabletMode(1,197,true,128),"attached keyboard keeps the taskbar entry");
+        Check(!Native.IsTabletMode(0,0,true,0),"ordinary desktop zero slate metric does not hide the entry");
+        Check(!Native.IsTabletMode(0,197,true,0x10)&&!Native.IsTabletMode(0,197,true,0x20)&&!Native.IsTabletMode(0,197,false,0),"touch alone or an unavailable rotation sensor does not enable slate detection");
+        Check(Native.IsTabletMode(0,197,true,1|8|64),"rotation lock, multiple monitors and docking do not disable supported posture detection");
         Rectangle rect = Placement.Widget(bar, 168, 840);
         Check(rect.Width==560 && rect.Height==70, "wider widget at 175% DPI");
         Check(rect.Top>=bar.Top && rect.Bottom<=bar.Bottom, "inside existing taskbar");
@@ -126,6 +169,7 @@ class LayoutTests {
         Check(occupied.IsEmpty && Placement.Widget(bar,168,null,occupied,true).IsEmpty,"known insufficient space stays cleared through an unavailable read");
         Check(Placement.Widget(bar,168,500,rect,true)==new Rectangle(14,1523,472,70),"recovered button data replaces the previous placement");
         DockingCheck();
+        PostureCheck(false);
         Rectangle popup=Placement.Popup(new Rectangle(2500,1516,60,70),new Rectangle(0,0,2560,1516),735,800,14);
         Check(popup.Right<=2560 && popup.Bottom<=1516 && popup.Left>=0,"flyout stays on screen");
         using(var owner=new Peek()) using(var flyout=new Flyout(owner)) {

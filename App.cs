@@ -87,7 +87,7 @@ class Peek : Form {
     readonly System.Windows.Forms.Timer timer=new System.Windows.Forms.Timer();
     readonly NotifyIcon tray=new NotifyIcon(); readonly ToolTip tip=new ToolTip();
     Process backend; Flyout flyout; DateTime lastData=DateTime.MinValue,nextStart=DateTime.MinValue,nextMeasure=DateTime.MinValue;
-    bool closing,locked,measuring,hover,backdrop; Rectangle safeArea,measuredBounds; IntPtr measuredTaskbar; int measuredDpi; DateTime measured=DateTime.MinValue; Icon appIcon;
+    bool closing,locked,measuring,hover,tabletMode; Rectangle safeArea,measuredBounds; IntPtr measuredTaskbar; int measuredDpi,postureGeneration; DateTime measured=DateTime.MinValue; Icon appIcon;
     public Peek(bool openAtStart=false,View preview=null) {
         Preview=preview!=null;
         Text="Codex Peek";AccessibleName="Codex 状态栏";FormBorderStyle=FormBorderStyle.None;ShowInTaskbar=Review;TopMost=true;StartPosition=FormStartPosition.Manual;
@@ -99,13 +99,13 @@ class Peek : Form {
         tray.ContextMenuStrip=menu;ContextMenuStrip=menu;tray.MouseClick+=(s,e)=>{if(e.Button==MouseButtons.Left)Toggle();};
         MouseEnter+=(s,e)=>{hover=true;Invalidate();};MouseLeave+=(s,e)=>{hover=false;Invalidate();};MouseUp+=(s,e)=>{if(e.Button==MouseButtons.Left)Toggle();};
         SystemEvents.SessionSwitch+=SessionChanged;
-        timer.Interval=750;timer.Tick+=(s,e)=>Tick();Shown+=(s,e)=>{Hide();if(Preview)Apply(preview);else StartBackend();Tick();timer.Start();if(openAtStart)BeginInvoke((Action)(()=>Toggle()));};
+        timer.Interval=750;timer.Tick+=(s,e)=>Tick();Shown+=(s,e)=>{Hide();if(Preview)Apply(preview);else StartBackend();Tick();timer.Start();if(openAtStart)BeginInvoke((Action)(()=>{if(!tabletMode)Toggle();}));};
     }
     protected override bool ShowWithoutActivation {get{return true;}}
-    protected override CreateParams CreateParams {get{var cp=base.CreateParams;cp.Style|=unchecked((int)0x80000000)|0x00C40000;cp.ExStyle|=0x08000000;if(!Review)cp.ExStyle|=0x80;return cp;}}
-    protected override void WndProc(ref Message m) {if(m.Msg==0x21){m.Result=new IntPtr(3);return;}if(m.Msg==0x83&&m.WParam!=IntPtr.Zero){m.Result=IntPtr.Zero;return;}if(m.Msg==0x84){m.Result=new IntPtr(1);return;}base.WndProc(ref m);}
+    protected override CreateParams CreateParams {get{var cp=base.CreateParams;cp.Style|=unchecked((int)0x80000000);cp.ExStyle|=0x08080000;if(!Review)cp.ExStyle|=0x80;return cp;}}
+    protected override void WndProc(ref Message m) {if(m.Msg==0x1A)UpdatePosture(Native.TabletMode());if(m.Msg==0x21){m.Result=new IntPtr(3);return;}if(m.Msg==0x83&&m.WParam!=IntPtr.Zero){m.Result=IntPtr.Zero;return;}if(m.Msg==0x84){m.Result=new IntPtr(1);return;}base.WndProc(ref m);}
     protected override void OnHandleCreated(EventArgs e) {
-        base.OnHandleCreated(e);backdrop=Native.PopupChrome(Handle,Theme.Transparency);if(backdrop)BackColor=Color.Black;
+        base.OnHandleCreated(e);
         Native.SetWindowPos(Handle,IntPtr.Zero,0,0,0,0,0x37);
     }
     static Icon MakeIcon() {
@@ -137,22 +137,30 @@ class Peek : Form {
         Invalidate();if(flyout!=null && flyout.Visible)flyout.RefreshData();
     }
     public static DateTime Epoch(double ms){return new DateTime(1970,1,1,0,0,0,DateTimeKind.Utc).AddMilliseconds(ms);}
+    public void UpdatePosture(bool tablet) {
+        if(tabletMode==tablet)return;
+        tabletMode=tablet;postureGeneration++;
+        safeArea=measuredBounds=Rectangle.Empty;measuredTaskbar=IntPtr.Zero;measuredDpi=0;measured=DateTime.MinValue;nextMeasure=DateTime.MinValue;
+        Hide();tip.Hide(this);hover=false;
+        if(tablet&&flyout!=null)flyout.Hide();
+    }
     void Tick() {
         if(!Preview && lastData!=DateTime.MinValue && (DateTime.UtcNow-lastData).TotalSeconds>15 && Data.connected){Data=View.Offline();Data.diagnostic="连接中断，正在重新同步";Invalidate();if(flyout!=null)flyout.RefreshData();}
         if((backend==null||backend.HasExited)&&DateTime.UtcNow>=nextStart)StartBackend();
-        if(DateTime.UtcNow>=nextMeasure&&!measuring){measuring=true;nextMeasure=DateTime.UtcNow.AddSeconds(4);ThreadPool.QueueUserWorkItem(s=>Measure());}
+        UpdatePosture(Native.TabletMode());
+        if(!tabletMode&&DateTime.UtcNow>=nextMeasure&&!measuring){measuring=true;nextMeasure=DateTime.UtcNow.AddSeconds(4);int generation=postureGeneration;ThreadPool.QueueUserWorkItem(s=>Measure(generation));}
         IntPtr bar=Native.FindWindow("Shell_TrayWnd",null);
         Rectangle rect=Native.Rect(bar);Rectangle screen=Screen.FromHandle(bar).Bounds;int dpi=(int)Native.GetDpiForWindow(bar);
         bool hidden=locked||bar==IntPtr.Zero||!Native.IsWindowVisible(bar)||rect.Top>=screen.Bottom-4||rect.Bottom>screen.Bottom+4||rect.Width<rect.Height||Native.Fullscreen(Handle,flyout==null?IntPtr.Zero:flyout.Handle,screen);
-        if(Environment.GetCommandLineArgs().Contains("--diagnostics"))try{File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"diagnostics.json"),new JavaScriptSerializer().Serialize(new{hidden=hidden,place=safeArea.ToString(),bar=rect.ToString(),age=(DateTime.UtcNow-measured).TotalSeconds,measuring=measuring,visible=Visible,dpi=dpi,headline=Data.headline,handle=Handle.ToInt64(),owner=Native.GetWindow(Handle,4).ToInt64(),barHandle=bar.ToInt64()}));}catch{}
+        if(Environment.GetCommandLineArgs().Contains("--diagnostics"))try{File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"diagnostics.json"),new JavaScriptSerializer().Serialize(new{hidden=tabletMode||hidden,tabletMode=tabletMode,place=safeArea.ToString(),bar=rect.ToString(),age=(DateTime.UtcNow-measured).TotalSeconds,measuring=measuring,visible=Visible,dpi=dpi,headline=Data.headline,handle=Handle.ToInt64(),owner=Native.GetWindow(Handle,4).ToInt64(),barHandle=bar.ToInt64()}));}catch{}
         DpiScale=dpi/96f;
         if(DpiScale<=0)DpiScale=1;
-        if(hidden || safeArea.IsEmpty || bar!=measuredTaskbar || rect!=measuredBounds || dpi!=measuredDpi || (DateTime.UtcNow-measured).TotalSeconds>12){Hide();if(hidden&&flyout!=null)flyout.Hide();return;}
-        if(Bounds!=safeArea){Bounds=safeArea;if(!backdrop)Theme.Round(this,S(8));}
+        if(tabletMode || hidden || safeArea.IsEmpty || bar!=measuredTaskbar || rect!=measuredBounds || dpi!=measuredDpi || (DateTime.UtcNow-measured).TotalSeconds>12){Hide();if(hidden&&flyout!=null)flyout.Hide();return;}
+        if(Bounds!=safeArea)Bounds=safeArea;
         if(!Visible)Show();Native.AboveTaskbar(Handle,bar);
         if(flyout!=null&&flyout.Visible)flyout.Invalidate(true);
     }
-    void Measure() {
+    void Measure(int generation) {
         IntPtr bar=Native.FindWindow("Shell_TrayWnd",null);Rectangle rect=Native.Rect(bar);int dpi=(int)Native.GetDpiForWindow(bar);int? first=null;
         try {
             if(bar!=IntPtr.Zero){
@@ -162,24 +170,30 @@ class Peek : Form {
             }
         }catch{first=null;}
         if(!closing)try{BeginInvoke((Action)(()=>{
+            measuring=false;if(generation!=postureGeneration||tabletMode)return;
             safeArea=Placement.Widget(rect,dpi,first,safeArea,bar==measuredTaskbar&&rect==measuredBounds&&dpi==measuredDpi);
-            measuredTaskbar=bar;measuredBounds=rect;measuredDpi=dpi;measured=DateTime.UtcNow;measuring=false;
+            measuredTaskbar=bar;measuredBounds=rect;measuredDpi=dpi;measured=DateTime.UtcNow;
         }));}catch{}
     }
     protected override void OnPaint(PaintEventArgs e) {
-        e.Graphics.Clear(backdrop?Color.FromArgb(hover?100:70,Theme.Bg):hover?Color.FromArgb(42,45,51):Theme.Bg);
-        e.Graphics.SmoothingMode=SmoothingMode.AntiAlias;
-        using(var path=Theme.Rounded(new Rectangle(1,1,Width-3,Height-3),S(8)))using(var pen=new Pen(Color.FromArgb(hover?38:22,Color.White)))e.Graphics.DrawPath(pen,path);
-        using(var brush=new SolidBrush(Theme.Accent(Data.tone)))e.Graphics.FillEllipse(brush,S(11),S(10),S(4),S(4));
-        using(var font=Theme.Font(S(13)))Theme.TextAt(e.Graphics,Data.headline,font,Theme.Text,new Rectangle(S(20),S(2),Width-S(31),S(21)));
-        using(var font=Theme.Font(S(11)))Theme.TextAt(e.Graphics,Data.quotaText,font,Theme.Muted,new Rectangle(S(20),S(22),Width-S(31),S(16)));
+        using(var bitmap=new Bitmap(Width,Height,System.Drawing.Imaging.PixelFormat.Format32bppPArgb))using(var g=Graphics.FromImage(bitmap)) {
+            // Alpha 1 keeps the whole entry clickable while revealing the real taskbar.
+            g.Clear(Color.FromArgb(1,0,0,0));g.SmoothingMode=SmoothingMode.AntiAlias;
+            bool transparent=Theme.Transparency,selected=flyout!=null&&flyout.Visible;
+            if(!transparent||hover||selected)using(var path=Theme.Rounded(new Rectangle(1,1,Width-2,Height-2),S(4)))using(var brush=new SolidBrush(transparent?Color.FromArgb(hover?20:14,Color.White):SystemInformation.HighContrast?SystemColors.Window:Theme.Bg))g.FillPath(brush,path);
+            Color text=SystemInformation.HighContrast?SystemColors.WindowText:Theme.Text,muted=SystemInformation.HighContrast?SystemColors.WindowText:Theme.Muted;
+            using(var brush=new SolidBrush(Theme.Accent(Data.tone)))g.FillEllipse(brush,S(11),S(10),S(4),S(4));
+            using(var font=Theme.Font(S(13)))Theme.TextAt(g,Data.headline,font,text,new Rectangle(S(20),S(2),Width-S(31),S(21)));
+            using(var font=Theme.Font(S(11)))Theme.TextAt(g,Data.quotaText,font,muted,new Rectangle(S(20),S(22),Width-S(31),S(16)));
+            Native.LayerEntry(Handle,bitmap,Location);
+        }
     }
     public void Toggle() {
         if(flyout==null||flyout.IsDisposed)flyout=new Flyout(this);
         if(flyout.Visible){flyout.Hide();return;}
-        tip.Hide(this);tip.Active=false;flyout.RefreshData();flyout.Show();
+        tip.Hide(this);tip.Active=false;flyout.RefreshData();flyout.Show();Invalidate();
     }
-    public void RestoreTooltip(){tip.Active=true;}
+    public void RestoreTooltip(){tip.Active=true;Invalidate();}
     public void OpenTask(string id) {
         if(Preview)return;
         if(flyout!=null)flyout.Hide();
@@ -295,6 +309,24 @@ class TaskRow : Button {
 }
 
 static class Native {
+    [StructLayout(LayoutKind.Sequential)]struct POINT {public int X,Y;}
+    [StructLayout(LayoutKind.Sequential)]struct SIZE {public int Width,Height;}
+    [StructLayout(LayoutKind.Sequential,Pack=1)]struct BLEND {public byte Operation,Flags,Alpha,Format;}
+    [DllImport("gdi32.dll",SetLastError=true)]static extern IntPtr CreateCompatibleDC(IntPtr dc);
+    [DllImport("gdi32.dll")]static extern IntPtr SelectObject(IntPtr dc,IntPtr obj);
+    [DllImport("gdi32.dll")]static extern bool DeleteObject(IntPtr obj);
+    [DllImport("gdi32.dll")]static extern bool DeleteDC(IntPtr dc);
+    [DllImport("user32.dll",SetLastError=true)]static extern bool UpdateLayeredWindow(IntPtr h,IntPtr target,ref POINT position,ref SIZE size,IntPtr source,ref POINT origin,uint key,ref BLEND blend,uint flags);
+    public static void LayerEntry(IntPtr h,Bitmap bitmap,Point location) {
+        IntPtr dc=CreateCompatibleDC(IntPtr.Zero),image=IntPtr.Zero,previous=IntPtr.Zero;
+        if(dc==IntPtr.Zero)throw new System.ComponentModel.Win32Exception();
+        try {
+            image=bitmap.GetHbitmap(Color.FromArgb(0));previous=SelectObject(dc,image);
+            if(previous==IntPtr.Zero||previous==new IntPtr(-1))throw new System.ComponentModel.Win32Exception();
+            var position=new POINT{X=location.X,Y=location.Y};var size=new SIZE{Width=bitmap.Width,Height=bitmap.Height};var origin=new POINT();var blend=new BLEND{Alpha=255,Format=1};
+            if(!UpdateLayeredWindow(h,IntPtr.Zero,ref position,ref size,dc,ref origin,0,ref blend,2))throw new System.ComponentModel.Win32Exception();
+        }finally{if(previous!=IntPtr.Zero&&previous!=new IntPtr(-1))SelectObject(dc,previous);if(image!=IntPtr.Zero)DeleteObject(image);DeleteDC(dc);}
+    }
     [StructLayout(LayoutKind.Sequential)]struct MARGINS {public int Left,Right,Top,Bottom;}
     [DllImport("dwmapi.dll")]static extern int DwmSetWindowAttribute(IntPtr h,int attribute,ref int value,int size);
     [DllImport("dwmapi.dll")]static extern int DwmExtendFrameIntoClientArea(IntPtr h,ref MARGINS margins);
@@ -308,6 +340,11 @@ static class Native {
     [DllImport("user32.dll",CharSet=CharSet.Unicode)]public static extern IntPtr FindWindow(string cls,string title);
     [DllImport("user32.dll")]static extern bool GetWindowRect(IntPtr h,out RECT rect);
     [DllImport("user32.dll")]public static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll")]public static extern int GetSystemMetrics(int index);
+    [DllImport("user32.dll")]static extern bool GetAutoRotationState(out uint state);
+    // Slate zero is meaningful only with integrated touch ready and rotation hardware (not AR_NOSENSOR / AR_NOT_SUPPORTED).
+    public static bool IsTabletMode(int slate,int digitizer,bool rotationAvailable,uint rotation) {return slate==0&&(digitizer&0x81)==0x81&&rotationAvailable&&(rotation&0x30)==0;}
+    public static bool TabletMode() {uint rotation;bool available=GetAutoRotationState(out rotation);return IsTabletMode(GetSystemMetrics(0x2003),GetSystemMetrics(94),available,rotation);}
     [DllImport("user32.dll")]public static extern uint GetDpiForWindow(IntPtr h);
     [DllImport("user32.dll")]public static extern bool SetProcessDpiAwarenessContext(IntPtr context);
     [DllImport("user32.dll")]public static extern bool SetWindowPos(IntPtr h,IntPtr after,int x,int y,int w,int height,uint flags);
