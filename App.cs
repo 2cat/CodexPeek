@@ -103,7 +103,15 @@ class Peek : Form {
     }
     protected override bool ShowWithoutActivation {get{return true;}}
     protected override CreateParams CreateParams {get{var cp=base.CreateParams;cp.Style|=unchecked((int)0x80000000);cp.ExStyle|=0x08080000;if(!Review)cp.ExStyle|=0x80;return cp;}}
-    protected override void WndProc(ref Message m) {if(m.Msg==0x1A)UpdatePosture(Native.TabletMode());if(m.Msg==0x21){m.Result=new IntPtr(3);return;}if(m.Msg==0x83&&m.WParam!=IntPtr.Zero){m.Result=IntPtr.Zero;return;}if(m.Msg==0x84){m.Result=new IntPtr(1);return;}base.WndProc(ref m);}
+    protected override void WndProc(ref Message m) {
+        if(m.Msg==0x0F){Native.ValidateRect(m.HWnd,IntPtr.Zero);PaintEntry();m.Result=IntPtr.Zero;return;}
+        if(m.Msg==0x14){m.Result=new IntPtr(1);return;}
+        if(m.Msg==0x1A)UpdatePosture(Native.TabletMode());
+        if(m.Msg==0x21){m.Result=new IntPtr(3);return;}
+        if(m.Msg==0x83&&m.WParam!=IntPtr.Zero){m.Result=IntPtr.Zero;return;}
+        if(m.Msg==0x84){m.Result=new IntPtr(1);return;}
+        base.WndProc(ref m);
+    }
     protected override void OnHandleCreated(EventArgs e) {
         base.OnHandleCreated(e);
         Native.SetWindowPos(Handle,IntPtr.Zero,0,0,0,0,0x37);
@@ -175,7 +183,7 @@ class Peek : Form {
             measuredTaskbar=bar;measuredBounds=rect;measuredDpi=dpi;measured=DateTime.UtcNow;
         }));}catch{}
     }
-    protected override void OnPaint(PaintEventArgs e) {
+    void PaintEntry() {
         using(var bitmap=new Bitmap(Width,Height,System.Drawing.Imaging.PixelFormat.Format32bppPArgb))using(var g=Graphics.FromImage(bitmap)) {
             // Alpha 1 keeps the whole entry clickable while revealing the real taskbar.
             g.Clear(Color.FromArgb(1,0,0,0));g.SmoothingMode=SmoothingMode.AntiAlias;
@@ -309,6 +317,7 @@ class TaskRow : Button {
 }
 
 static class Native {
+    [DllImport("user32.dll")]public static extern bool ValidateRect(IntPtr h,IntPtr rectangle);
     [StructLayout(LayoutKind.Sequential)]struct POINT {public int X,Y;}
     [StructLayout(LayoutKind.Sequential)]struct SIZE {public int Width,Height;}
     [StructLayout(LayoutKind.Sequential,Pack=1)]struct BLEND {public byte Operation,Flags,Alpha,Format;}
