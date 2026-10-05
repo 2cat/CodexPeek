@@ -66,7 +66,8 @@ class LayoutTests {
     static void Check(bool value, string message) { if (!value) { Console.Error.WriteLine("FAIL: "+message); throw new Exception(message); } }
     // Public window operations need no Explorer; --posture also waits for real taskbar recovery. System posture is unchanged.
     static void PostureCheck(bool freshMeasurement) {
-        using(var owner=new Peek(false,View.Offline()))using(var poll=new System.Windows.Forms.Timer()) {
+        var entryView=View.Offline();entryView.tone="red";
+        using(var owner=new Peek(false,entryView))using(var poll=new System.Windows.Forms.Timer()) {
             Exception failure=null;var watch=Stopwatch.StartNew();int stage=0;
             poll.Interval=50;poll.Tick+=(s,e)=>{
                 try {
@@ -76,6 +77,10 @@ class LayoutTests {
                         Check((GetWindowLong(owner.Handle,-20)&0x80000)!=0,"entry supports per-pixel transparent rendering");
                         var blank=new POINT{X=owner.Right-8,Y=owner.Top+owner.Height/2};
                         Check(GetAncestor(WindowFromPoint(blank),2)==owner.Handle,"blank background remains part of the clickable entry");
+                        using(var pixel=new Bitmap(1,1))using(var g=Graphics.FromImage(pixel)) {
+                            g.CopyFromScreen(owner.Left+owner.S(13),owner.Top+owner.S(12),0,0,new Size(1,1));var color=pixel.GetPixel(0,0);
+                            Check(Math.Abs(color.R-245)<=2&&Math.Abs(color.G-119)<=2&&Math.Abs(color.B-126)<=2,"the composed transparent entry actually displays its status indicator; color="+color);
+                        }
                         owner.Toggle();var popup=Application.OpenForms.OfType<Flyout>().Single();
                         Check(popup.Visible,"task list opens before entering tablet posture");
                         owner.UpdatePosture(true);
