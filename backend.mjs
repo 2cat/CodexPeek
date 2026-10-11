@@ -11,7 +11,7 @@ import { present, TaskFeed, readRecentHistory } from './status.mjs';
 const once = process.argv.includes('--once');
 const codexHome = process.env.CODEX_HOME || path.join(process.env.USERPROFILE,'.codex');
 const feed = new TaskFeed(), known = new Map(), owners = new Map();
-let socket, clientId, connected = false, buffer = Buffer.alloc(0), quota = null, quotaChild, retry, poll, closed = false, catalogError = false, protocolError = false;
+let socket, clientId, connected = false, quota = null, quotaChild, retry, poll, closed = false, catalogError = false, protocolError = false;
 let updatedAt = null, initTimer, history = [];
 
 function emit() {
@@ -45,7 +45,7 @@ function scan() {
 }
 function connect() {
   if(closed) return;
-  buffer = Buffer.alloc(0); clientId = 'initializing-client';
+  let frameLength = null; clientId = 'initializing-client';
   socket = net.createConnection(process.env.CODEX_PEEK_PIPE || '\\\\.\\pipe\\codex-ipc');
   initTimer=setTimeout(()=>socket.destroy(),8000);
   socket.on('connect',() => send({type:'request',requestId:randomUUID(),sourceClientId:clientId,version:0,method:'initialize',params:{clientType:'codex-peek'}}));
@@ -54,16 +54,19 @@ function connect() {
     clearTimeout(initTimer);connected = false; feed.clear();history=[];known.clear();owners.clear();clearInterval(poll);emit();
     if(!closed) retry = setTimeout(connect,3000);
   });
-  socket.on('data',chunk => {
-    buffer = Buffer.concat([buffer,chunk]);
+  socket.on('readable',() => {
     // Bound messages from the internal transport. Fail visibly rather than interpreting a changed protocol.
-    while(buffer.length>=4) {
-      const length = buffer.readUInt32LE(0);
-      if(length>64*1024*1024) {protocolError=true;socket.destroy();return;}
-      if(buffer.length<length+4) break;
+    // Let Node queue chunks; repeatedly copying a growing image-heavy snapshot stalls the feed.
+    while(!socket.destroyed) {
+      if(frameLength===null) {
+        const header=socket.read(4);if(header===null) break;
+        frameLength=header.readUInt32LE(0);
+        if(frameLength===0 || frameLength>128*1024*1024) {protocolError=true;socket.destroy();return;}
+      }
+      const payload=socket.read(frameLength);if(payload===null) break;
+      frameLength=null;
       let message;
-      try { message = JSON.parse(buffer.subarray(4,4+length)); } catch {protocolError=true;socket.destroy();return;}
-      buffer = buffer.subarray(4+length);
+      try { message = JSON.parse(payload); } catch {protocolError=true;socket.destroy();return;}
       receive(message);
     }
   });
