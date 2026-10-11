@@ -12,6 +12,13 @@ using System.Web.Script.Serialization;
 using System.Windows.Automation;
 using System.Windows.Forms;
 using Microsoft.Win32;
+using System.Reflection;
+
+[assembly: AssemblyTitle("CodexPeek")]
+[assembly: AssemblyProduct("CodexPeek")]
+[assembly: AssemblyVersion("0.1.0.0")]
+[assembly: AssemblyFileVersion("0.1.0.0")]
+[assembly: AssemblyInformationalVersion("0.1.0")]
 
 class TaskItem {
     public string id {get;set;} public string title {get;set;} public string state {get;set;}
