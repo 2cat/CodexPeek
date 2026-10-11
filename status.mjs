@@ -18,6 +18,12 @@ function compactActivity(detail) {
   return detail.replace(/^正在([^·]+) · /,(_,action)=>`${({执行命令:'命令',运行测试:'测试',调用工具:'工具',整理回复:'回复',执行任务:'任务',搜索代码:'搜索',查看项目文件:'文件'})[action] ?? action} · `);
 }
 
+function taskTitle(title) {
+  title = typeof title === 'string' ? title.trim() : '';
+  if(title.startsWith('# Files mentioned by the user:')) title = title.match(/^## My request:[ \t]*\r?\n([\s\S]*)/m)?.[1] ?? '';
+  return title.replace(/\s+/g,' ').trim() || '未命名任务';
+}
+
 function resetCountdown(resetsAt, now) {
   if(!Number.isFinite(resetsAt)) return '';
   const seconds = Math.floor(resetsAt-now/1000);
@@ -55,7 +61,7 @@ export function readRecentHistory(rows, codexHome) {
         last={type:payload.type,startedAt:payload.started_at ?? startedAt,message:payload.last_agent_message};
       }
       if(!['task_complete','turn_aborted'].includes(last?.type) || !Number.isFinite(last.startedAt) || last.startedAt<=0) return null;
-      return {id:row.id,title:row.title || '未命名任务',state:'completed',detail:last.type==='turn_aborted'?'上次已停止':'任务已结束',progress:typeof last.message==='string'?last.message.replace(/\s+/g,' ').slice(0,220):'',startedAt:last.startedAt*1000};
+      return {id:row.id,title:taskTitle(row.title),state:'completed',detail:last.type==='turn_aborted'?'上次已停止':'任务已结束',progress:typeof last.message==='string'?last.message.replace(/\s+/g,' ').slice(0,220):'',startedAt:last.startedAt*1000};
     } catch { return null; }
     finally {if(file!==undefined) closeSync(file);}
   }).filter(Boolean);
@@ -113,14 +119,15 @@ function taskFromState(id,s,includeIdle=false) {
   const activeItem = [...items].reverse().find(i => i.status === 'inProgress');
   const latest = items.at(-1);
   let detail = operation(activeItem ?? latest);
-  if(state==='running' && s.title && ['正在执行任务','正在思考','正在整理回复','正在调用工具','正在搜索资料','正在生成图片','正在执行命令','正在搜索代码','正在查看项目文件'].includes(detail)) detail += ` · ${s.title}`;
+  const title = taskTitle(s.title);
+  if(state==='running' && s.title && ['正在执行任务','正在思考','正在整理回复','正在调用工具','正在搜索资料','正在生成图片','正在执行命令','正在搜索代码','正在查看项目文件'].includes(detail)) detail += ` · ${title}`;
   if(state === 'approval') detail = '需要确认操作，请打开原任务处理';
   if(state === 'input') detail = '任务正在等待你的回复';
   if(state === 'failed') detail = '任务遇到异常，请打开原任务查看';
   if(state === 'idle') detail = turn?.status==='failed' ? '上次执行失败' : ['interrupted','cancelled'].includes(turn?.status) ? '上次已停止' : '任务已结束';
   const comment = [...items].reverse().find(i => i.type === 'agentMessage');
   const text = typeof comment?.text === 'string' ? comment.text : '';
-  return {id,title:s.title || '未命名任务',state,detail,progress:text.replace(/\s+/g,' ').slice(0,220),startedAt:turn?.turnStartedAtMs ?? null};
+  return {id,title,state,detail,progress:text.replace(/\s+/g,' ').slice(0,220),startedAt:turn?.turnStartedAtMs ?? null};
 }
 
 const basename = path => String(path ?? '').split(/[\\/]/).at(-1);

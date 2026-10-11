@@ -28,3 +28,19 @@ jobs:
       - name: Check fixed entry deployment and rollback
         shell: pwsh
         run: ./deploy-check.ps1
+      - name: Prepare unsigned application artifact
+        shell: pwsh
+        run: |
+          $package = New-Item -ItemType Directory -Path build/package
+          Copy-Item build/CodexPeek.candidate.exe $package/CodexPeek.exe
+          Copy-Item backend.mjs,status.mjs,README.md,LICENSE $package
+          Copy-Item docs/design.md,docs/validation.md,docs/code-signing.md (New-Item -ItemType Directory -Path $package/docs)
+          Copy-Item docs/images/taskbar-demo.png,docs/images/tasks-demo.png (New-Item -ItemType Directory -Path $package/docs/images)
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $metadata = (Get-Item $package/CodexPeek.exe).VersionInfo
+          if ($metadata.ProductName -ne 'CodexPeek' -or $metadata.ProductVersion -ne $version) { throw 'Release metadata does not match the project' }
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: CodexPeek-unsigned
+          path: build/package/
+          if-no-files-found: error

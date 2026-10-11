@@ -1,6 +1,7 @@
 {
   "name": "codex-peek",
   "version": "0.1.0",
+  "license": "MIT",
   "private": true,
   "description": "Windows taskbar companion for local Codex task status and remaining usage",
   "type": "module",
